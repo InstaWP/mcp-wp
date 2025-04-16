@@ -6,11 +6,11 @@ This is a Model Context Protocol (MCP) server for WordPress, allowing you to int
 
 ### Claude Desktop 
 
-1. Download and install [Claude Desktop](https://claude.ai/claude-desktop).
+1. Download and install [Claude Desktop](https://claude.ai/download).
 2. Open Claude Desktop settings and navigate to the "Developer" tab.
 3. Copy the contents of the `claude_desktop_config.json.example` file.
 4. Click "Edit Config" to open the `claude_desktop_config.json` file.
-5. Copy paste the contents of the example file into the config file. Make sure to replace the placeholder values with your actual values for the WordPress site. To generate the application keys, follow this guide - [Application Passwords](https://wordpress.org/support/article/application-passwords/).
+5. Copy paste the contents of the example file into the config file. Make sure to replace the placeholder values with your actual values for the WordPress site. To generate the application keys, follow this guide - [Application Passwords](https://make.wordpress.org/core/2020/11/05/application-passwords-integration-guide#Getting-Credentials).
 6. Save the configuration.
 7. Restart Claude Desktop.
 
