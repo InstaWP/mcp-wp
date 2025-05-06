@@ -1,0 +1,33 @@
+{
+  "inputs": [
+    {
+      "type": "promptString",
+      "id": "wordpress-api-url",
+      "description": "WordPress API URL",
+      "default": "https://your-wordpress-site.com"
+    },
+    {
+      "type": "promptString",
+      "id": "wordpress-username",
+      "description": "WordPress Username"
+    },
+    {
+      "type": "promptString",
+      "id": "wordpress-password",
+      "description": "WordPress Application Password",
+      "password": true
+    }
+  ],
+  "servers": {
+    "WordPress MCP": {
+      "type": "stdio",
+      "command": "npx",
+      "args": ["-y", "@instawp/mcp-wp"],
+      "env": {
+        "WORDPRESS_API_URL": "${input:wordpress-api-url}",
+        "WORDPRESS_USERNAME": "${input:wordpress-username}",
+        "WORDPRESS_PASSWORD": "${input:wordpress-password}"
+      }
+    }
+  }
+}
