@@ -243,6 +243,28 @@ Feel free to open issues or make pull requests to improve this project.
 
 ## Using MCP Tools in VS Code
 
+### VS Code Extension
+
+This project includes a dedicated VS Code extension that makes it even easier to work with the WordPress MCP server. The extension provides:
+
+- Easy configuration of WordPress credentials
+- Commands for common WordPress operations
+- Automatic MCP server management
+- Seamless integration with GitHub Copilot Chat
+
+To use the extension:
+
+1. Navigate to the `vscode-extension` directory
+2. Run `npm install` to install dependencies
+3. Run `npm run compile` to build the extension
+4. Press F5 in VS Code to launch a new window with the extension loaded
+5. Use the "WordPress MCP: Configure Server" command to set up your WordPress credentials
+6. Use the "WordPress MCP: Start Server" command to start the MCP server
+
+For more details, see the [VS Code Extension README](./vscode-extension/README.md).
+
+### Using with GitHub Copilot Chat
+
 When using the WordPress MCP server with VS Code, you can interact with your WordPress site through the GitHub Copilot Chat interface in agent mode. Here are some example prompts you can use:
 
 - "List all posts on my WordPress site"
