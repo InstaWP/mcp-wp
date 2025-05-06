@@ -32,6 +32,10 @@
         "title": "WordPress MCP: Configure Server"
       },
       {
+        "command": "wordpress-mcp.showQuickActions",
+        "title": "WordPress MCP: Show Quick Actions"
+      },
+      {
         "command": "wordpress-mcp.listPosts",
         "title": "WordPress MCP: List Posts"
       },
@@ -54,6 +58,66 @@
       {
         "command": "wordpress-mcp.listMedia",
         "title": "WordPress MCP: List Media"
+      },
+      {
+        "command": "wordpress-mcp.addSiteProfile",
+        "title": "WordPress MCP: Add Site Profile"
+      },
+      {
+        "command": "wordpress-mcp.editSiteProfile",
+        "title": "WordPress MCP: Edit Site Profile"
+      },
+      {
+        "command": "wordpress-mcp.deleteSiteProfile",
+        "title": "WordPress MCP: Delete Site Profile"
+      },
+      {
+        "command": "wordpress-mcp.switchSiteProfile",
+        "title": "WordPress MCP: Switch Site Profile"
+      },
+      {
+        "command": "wordpress-mcp.listSiteProfiles",
+        "title": "WordPress MCP: List Site Profiles"
+      },
+      {
+        "command": "wordpress-mcp.browseThemes",
+        "title": "WordPress MCP: Browse Themes"
+      },
+      {
+        "command": "wordpress-mcp.activateTheme",
+        "title": "WordPress MCP: Activate Theme"
+      },
+      {
+        "command": "wordpress-mcp.toggleDebugMode",
+        "title": "WordPress MCP: Toggle Debug Mode"
+      },
+      {
+        "command": "wordpress-mcp.viewDebugLogs",
+        "title": "WordPress MCP: View Debug Logs"
+      },
+      {
+        "command": "wordpress-mcp.runSqlQuery",
+        "title": "WordPress MCP: Run SQL Query"
+      },
+      {
+        "command": "wordpress-mcp.optimizeDatabase",
+        "title": "WordPress MCP: Optimize Database"
+      },
+      {
+        "command": "wordpress-mcp.manageUsers",
+        "title": "WordPress MCP: Manage Users"
+      },
+      {
+        "command": "wordpress-mcp.createUser",
+        "title": "WordPress MCP: Create User"
+      },
+      {
+        "command": "wordpress-mcp.siteHealthCheck",
+        "title": "WordPress MCP: Site Health Check"
+      },
+      {
+        "command": "wordpress-mcp.clearCache",
+        "title": "WordPress MCP: Clear Cache"
       }
     ],
     "configuration": {
@@ -78,6 +142,11 @@
           "type": "boolean",
           "default": false,
           "description": "Automatically start the WordPress MCP server when VS Code starts"
+        },
+        "wordpress-mcp.siteName": {
+          "type": "string",
+          "default": "WordPress",
+          "description": "Display name for the WordPress site in the status bar"
         }
       }
     }
@@ -110,6 +179,7 @@
     "@vscode/test-electron": "^2.3.9"
   },
   "dependencies": {
-    "@instawp/mcp-wp": "^0.0.3"
+    "@instawp/mcp-wp": "^0.0.3",
+    "uuid": "^9.0.1"
   }
 }
