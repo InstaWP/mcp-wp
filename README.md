@@ -240,3 +240,22 @@ wp/
 ### Contribution
 
 Feel free to open issues or make pull requests to improve this project.
+
+## Using MCP Tools in VS Code
+
+When using the WordPress MCP server with VS Code, you can interact with your WordPress site through the GitHub Copilot Chat interface in agent mode. Here are some example prompts you can use:
+
+- "List all posts on my WordPress site"
+- "Create a new page titled 'About Us' with the following content: ..."
+- "Show me all active plugins on my WordPress site"
+- "Upload a new media item from this URL: ..."
+- "List all users with administrator role"
+- "Create a new category called 'Tutorials'"
+- "Update the post with ID 123 to change its title to 'New Title'"
+
+VS Code will automatically invoke the appropriate MCP tools based on your natural language requests. You can also directly reference specific tools by using the `#` symbol followed by the tool name, for example:
+
+- "Use #list_posts to show me all published posts"
+- "Use #create_page to create a new page"
+
+For more information on using MCP tools in VS Code, refer to the [VS Code MCP documentation](https://code.visualstudio.com/docs/copilot/chat/mcp-servers).
