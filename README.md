@@ -1,10 +1,20 @@
 # WordPress MCP Server
 
-This is a Model Context Protocol (MCP) server for WordPress, allowing you to interact with your WordPress site using natural language via an MCP-compatible client like Claude for Desktop. This server exposes various WordPress data and functionality as MCP tools.
+This is a Model Context Protocol (MCP) server for WordPress, allowing you to interact with your WordPress site using natural language via MCP-compatible clients like Claude for Desktop and Visual Studio Code. This server exposes various WordPress data and functionality as MCP tools.
 
-## Usage 
+## Usage
 
-### Claude Desktop 
+### Visual Studio Code
+
+1. Make sure you have VS Code version 1.99 or later installed.
+2. Ensure you have GitHub Copilot Chat extension installed and configured.
+3. In your workspace, create a `.vscode/mcp.json` file (or use the one provided in this repository).
+4. When you first use the MCP server, VS Code will prompt you for your WordPress credentials.
+5. Open the Command Palette (Ctrl+Shift+P / Cmd+Shift+P) and run **MCP: List Servers** to verify the server is configured.
+6. Open the Chat view (Ctrl+Alt+I / Cmd+Option+I) and select **Agent** mode from the dropdown.
+7. You can now interact with your WordPress site through the chat interface.
+
+### Claude Desktop
 
 1. Download and install [Claude Desktop](https://claude.ai/download).
 2. Open Claude Desktop settings and navigate to the "Developer" tab.
@@ -60,7 +70,7 @@ This server currently provides tools to interact with core WordPress data:
     *   `activate_plugin`: Activate a plugin.
     *   `deactivate_plugin`: Deactivate a plugin.
     *   `create_plugin`: Create a new plugin.
-    
+
 
 More features and endpoints will be added in future updates.
 
@@ -87,7 +97,9 @@ WORDPRESS_PASSWORD=wp_app_password
 *   **Node.js and npm:** Ensure you have Node.js (version 18 or higher) and npm installed.
 *   **WordPress Site:** You need an active WordPress site with the REST API enabled.
 *   **WordPress API Authentication:** Set up authentication for the WordPress REST API. This typically requires an authentication plugin or method (like Application Passwords).
-*   **MCP Client:** You need an application that can communicate with the MCP Server. Currently, Claude Desktop is recommended.
+*   **MCP Client:** You need an application that can communicate with the MCP Server. Supported clients include:
+    * **Visual Studio Code** (version 1.99+) with GitHub Copilot Chat extension
+    * **Claude Desktop**
 
 ### Installation and Setup
 
@@ -122,7 +134,47 @@ WORDPRESS_PASSWORD=wp_app_password
     npm run build
     ```
 
-5. **Configure Claude Desktop:**
+5. **Configure VS Code:**
+
+   * Create a `.vscode/mcp.json` file in your workspace with the following content:
+     ```json
+     {
+       "inputs": [
+         {
+           "type": "promptString",
+           "id": "wordpress-api-url",
+           "description": "WordPress API URL",
+           "default": "https://your-wordpress-site.com"
+         },
+         {
+           "type": "promptString",
+           "id": "wordpress-username",
+           "description": "WordPress Username"
+         },
+         {
+           "type": "promptString",
+           "id": "wordpress-password",
+           "description": "WordPress Application Password",
+           "password": true
+         }
+       ],
+       "servers": {
+         "WordPress MCP": {
+           "type": "stdio",
+           "command": "npx",
+           "args": ["-y", "@instawp/mcp-wp"],
+           "env": {
+             "WORDPRESS_API_URL": "${input:wordpress-api-url}",
+             "WORDPRESS_USERNAME": "${input:wordpress-username}",
+             "WORDPRESS_PASSWORD": "${input:wordpress-password}"
+           }
+         }
+       }
+     }
+     ```
+   * VS Code will prompt you for your WordPress credentials when you first use the MCP server.
+
+6. **Configure Claude Desktop (Optional):**
 
    * Open Claude Desktop settings and navigate to the "Developer" tab.
    * Click "Edit Config" to open the `claude_desktop_config.json` file.
@@ -131,7 +183,18 @@ WORDPRESS_PASSWORD=wp_app_password
 
 ### Running the Server
 
+#### With VS Code
+
+1. Open the Command Palette (Ctrl+Shift+P / Cmd+Shift+P) and run **MCP: List Servers**.
+2. Select the "WordPress MCP" server and click "Start".
+3. Open the Chat view (Ctrl+Alt+I / Cmd+Option+I) and select **Agent** mode from the dropdown.
+4. You can now interact with your WordPress site through the chat interface.
+
+#### With Claude Desktop
+
 Once you've configured Claude Desktop, the server should start automatically whenever Claude Desktop starts.
+
+#### From Command Line
 
 You can also run the server directly from the command line for testing:
 
@@ -177,3 +240,44 @@ wp/
 ### Contribution
 
 Feel free to open issues or make pull requests to improve this project.
+
+## Using MCP Tools in VS Code
+
+### VS Code Extension
+
+This project includes a dedicated VS Code extension that makes it even easier to work with the WordPress MCP server. The extension provides:
+
+- Easy configuration of WordPress credentials
+- Commands for common WordPress operations
+- Automatic MCP server management
+- Seamless integration with GitHub Copilot Chat
+
+To use the extension:
+
+1. Navigate to the `vscode-extension` directory
+2. Run `npm install` to install dependencies
+3. Run `npm run compile` to build the extension
+4. Press F5 in VS Code to launch a new window with the extension loaded
+5. Use the "WordPress MCP: Configure Server" command to set up your WordPress credentials
+6. Use the "WordPress MCP: Start Server" command to start the MCP server
+
+For more details, see the [VS Code Extension README](./vscode-extension/README.md).
+
+### Using with GitHub Copilot Chat
+
+When using the WordPress MCP server with VS Code, you can interact with your WordPress site through the GitHub Copilot Chat interface in agent mode. Here are some example prompts you can use:
+
+- "List all posts on my WordPress site"
+- "Create a new page titled 'About Us' with the following content: ..."
+- "Show me all active plugins on my WordPress site"
+- "Upload a new media item from this URL: ..."
+- "List all users with administrator role"
+- "Create a new category called 'Tutorials'"
+- "Update the post with ID 123 to change its title to 'New Title'"
+
+VS Code will automatically invoke the appropriate MCP tools based on your natural language requests. You can also directly reference specific tools by using the `#` symbol followed by the tool name, for example:
+
+- "Use #list_posts to show me all published posts"
+- "Use #create_page to create a new page"
+
+For more information on using MCP tools in VS Code, refer to the [VS Code MCP documentation](https://code.visualstudio.com/docs/copilot/chat/mcp-servers).
