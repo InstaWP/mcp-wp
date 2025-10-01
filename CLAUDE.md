@@ -121,6 +121,8 @@ Handles ALL taxonomies (categories, tags, custom taxonomies) with a single set o
 - **Comments** (`comments.ts`): Comment management (~5 tools)
 - **Plugins** (`plugins.ts`): Plugin activation/deactivation (~5 tools)
 - **Plugin Repository** (`plugin-repository.ts`): WordPress.org plugin search (~2 tools)
+- **SQL Queries** (`sql-query.ts`): Execute read-only database queries (1 tool, requires custom endpoint)
+  - **Note**: Uses `/mcp/v1/query` endpoint by default; customize via `WORDPRESS_SQL_ENDPOINT` environment variable
 
 ### Key Features
 
