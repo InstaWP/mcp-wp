@@ -4,3 +4,4 @@ build
 package-lock.json
 logs
 *.code-workspace
+.claude/settings.local.json

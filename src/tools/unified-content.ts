@@ -9,7 +9,7 @@ let cacheTimestamp: number = 0;
 const CACHE_DURATION = 5 * 60 * 1000; // 5 minutes
 
 // Helper function to get all post types with caching
-async function getPostTypes(forceRefresh = false) {
+async function getPostTypes(forceRefresh = false, siteId?: string) {
   const now = Date.now();
   
   if (!forceRefresh && postTypesCache && (now - cacheTimestamp) < CACHE_DURATION) {
@@ -19,7 +19,7 @@ async function getPostTypes(forceRefresh = false) {
 
   try {
     logToFile('Fetching post types from API');
-    const response = await makeWordPressRequest('GET', 'types');
+    const response = await makeWordPressRequest('GET', 'types', undefined, { siteId });
     postTypesCache = response;
     cacheTimestamp = now;
     return response;
@@ -62,12 +62,12 @@ function parseUrl(url: string): { slug: string; pathHints: string[] } {
 }
 
 // Helper function to find content across multiple post types
-async function findContentAcrossTypes(slug: string, contentTypes?: string[]) {
+async function findContentAcrossTypes(slug: string, contentTypes?: string[], siteId?: string) {
   const typesToSearch = contentTypes || [];
   
   // If no specific content types provided, get all available types
   if (typesToSearch.length === 0) {
-    const allTypes = await getPostTypes();
+    const allTypes = await getPostTypes(false, siteId);
     typesToSearch.push(...Object.keys(allTypes).filter(type => 
       type !== 'attachment' && type !== 'wp_block'
     ));
@@ -83,7 +83,7 @@ async function findContentAcrossTypes(slug: string, contentTypes?: string[]) {
       const response = await makeWordPressRequest('GET', endpoint, {
         slug: slug,
         per_page: 1
-      });
+      }, { siteId });
       
       if (Array.isArray(response) && response.length > 0) {
         logToFile(`Found content with slug "${slug}" in content type "${contentType}"`);
@@ -100,6 +100,7 @@ async function findContentAcrossTypes(slug: string, contentTypes?: string[]) {
 // Schema definitions
 const listContentSchema = z.object({
   content_type: z.string().describe("The content type slug (e.g., 'post', 'page', 'product', 'documentation')"),
+  site_id: z.string().optional().describe("Site ID (for multi-site setups)"),
   page: z.number().optional().describe("Page number (default 1)"),
   per_page: z.number().min(1).max(100).optional().describe("Items per page (default 10, max 100)"),
   search: z.string().optional().describe("Search term for content title or body"),
@@ -117,11 +118,13 @@ const listContentSchema = z.object({
 
 const getContentSchema = z.object({
   content_type: z.string().describe("The content type slug"),
-  id: z.number().describe("Content ID")
+  id: z.number().describe("Content ID"),
+  site_id: z.string().optional().describe("Site ID (for multi-site setups)")
 });
 
 const createContentSchema = z.object({
   content_type: z.string().describe("The content type slug"),
+  site_id: z.string().optional().describe("Site ID (for multi-site setups)"),
   title: z.string().describe("Content title"),
   content: z.string().describe("Content body"),
   status: z.string().optional().default('draft').describe("Content status"),
@@ -141,6 +144,7 @@ const createContentSchema = z.object({
 const updateContentSchema = z.object({
   content_type: z.string().describe("The content type slug"),
   id: z.number().describe("Content ID"),
+  site_id: z.string().optional().describe("Site ID (for multi-site setups)"),
   title: z.string().optional().describe("Content title"),
   content: z.string().optional().describe("Content body"),
   status: z.string().optional().describe("Content status"),
@@ -160,15 +164,18 @@ const updateContentSchema = z.object({
 const deleteContentSchema = z.object({
   content_type: z.string().describe("The content type slug"),
   id: z.number().describe("Content ID"),
+  site_id: z.string().optional().describe("Site ID (for multi-site setups)"),
   force: z.boolean().optional().describe("Whether to bypass trash and force deletion")
 });
 
 const discoverContentTypesSchema = z.object({
-  refresh_cache: z.boolean().optional().describe("Force refresh the content types cache")
+  refresh_cache: z.boolean().optional().describe("Force refresh the content types cache"),
+  site_id: z.string().optional().describe("Site ID (for multi-site setups)")
 });
 
 const findContentByUrlSchema = z.object({
   url: z.string().describe("The full URL of the content to find"),
+  site_id: z.string().optional().describe("Site ID (for multi-site setups)"),
   update_fields: z.object({
     title: z.string().optional(),
     content: z.string().optional(),
@@ -180,6 +187,7 @@ const findContentByUrlSchema = z.object({
 
 const getContentBySlugSchema = z.object({
   slug: z.string().describe("The slug to search for"),
+  site_id: z.string().optional().describe("Site ID (for multi-site setups)"),
   content_types: z.array(z.string()).optional().describe("Content types to search in (defaults to all)")
 });
 
@@ -240,9 +248,9 @@ export const unifiedContentHandlers = {
   list_content: async (params: ListContentParams) => {
     try {
       const endpoint = getContentEndpoint(params.content_type);
-      const { content_type, ...queryParams } = params;
+      const { content_type, site_id, ...queryParams } = params;
       
-      const response = await makeWordPressRequest('GET', endpoint, queryParams);
+      const response = await makeWordPressRequest('GET', endpoint, queryParams, { siteId: site_id });
       
       return {
         toolResult: {
@@ -269,7 +277,7 @@ export const unifiedContentHandlers = {
   get_content: async (params: GetContentParams) => {
     try {
       const endpoint = getContentEndpoint(params.content_type);
-      const response = await makeWordPressRequest('GET', `${endpoint}/${params.id}`);
+      const response = await makeWordPressRequest('GET', `${endpoint}/${params.id}`, undefined, { siteId: params.site_id });
       
       return {
         toolResult: {
@@ -329,7 +337,7 @@ export const unifiedContentHandlers = {
         }
       });
       
-      const response = await makeWordPressRequest('POST', endpoint, contentData);
+      const response = await makeWordPressRequest('POST', endpoint, contentData, { siteId: params.site_id });
       
       return {
         toolResult: {
@@ -379,7 +387,7 @@ export const unifiedContentHandlers = {
         Object.assign(updateData, params.custom_fields);
       }
       
-      const response = await makeWordPressRequest('POST', `${endpoint}/${params.id}`, updateData);
+      const response = await makeWordPressRequest('POST', `${endpoint}/${params.id}`, updateData, { siteId: params.site_id });
       
       return {
         toolResult: {
@@ -409,7 +417,7 @@ export const unifiedContentHandlers = {
       
       const response = await makeWordPressRequest('DELETE', `${endpoint}/${params.id}`, {
         force: params.force || false
-      });
+      }, { siteId: params.site_id });
       
       return {
         toolResult: {
@@ -435,7 +443,7 @@ export const unifiedContentHandlers = {
 
   discover_content_types: async (params: DiscoverContentTypesParams) => {
     try {
-      const contentTypes = await getPostTypes(params.refresh_cache || false);
+      const contentTypes = await getPostTypes(params.refresh_cache || false, params.site_id);
       
       // Format the response to be more readable
       const formattedTypes = Object.entries(contentTypes).map(([slug, type]: [string, any]) => ({
@@ -511,11 +519,11 @@ export const unifiedContentHandlers = {
       const typesToSearch = [...new Set(priorityTypes)];
       
       // Find the content
-      const result = await findContentAcrossTypes(slug, typesToSearch);
+      const result = await findContentAcrossTypes(slug, typesToSearch, params.site_id);
       
       if (!result) {
         // If not found in priority types, search all types
-        const allResult = await findContentAcrossTypes(slug);
+        const allResult = await findContentAcrossTypes(slug, undefined, params.site_id);
         if (!allResult) {
           throw new Error(`No content found with URL: ${params.url}`);
         }
@@ -535,7 +543,7 @@ export const unifiedContentHandlers = {
             Object.assign(updateData, params.update_fields.custom_fields);
           }
           
-          const updatedContent = await makeWordPressRequest('POST', `${endpoint}/${content.id}`, updateData);
+          const updatedContent = await makeWordPressRequest('POST', `${endpoint}/${content.id}`, updateData, { siteId: params.site_id });
           
           return {
             toolResult: {
@@ -587,7 +595,7 @@ export const unifiedContentHandlers = {
           Object.assign(updateData, params.update_fields.custom_fields);
         }
         
-        const updatedContent = await makeWordPressRequest('POST', `${endpoint}/${content.id}`, updateData);
+        const updatedContent = await makeWordPressRequest('POST', `${endpoint}/${content.id}`, updateData, { siteId: params.site_id });
         
         return {
           toolResult: {
@@ -637,7 +645,7 @@ export const unifiedContentHandlers = {
 
   get_content_by_slug: async (params: GetContentBySlugParams) => {
     try {
-      const result = await findContentAcrossTypes(params.slug, params.content_types);
+      const result = await findContentAcrossTypes(params.slug, params.content_types, params.site_id);
       
       if (!result) {
         throw new Error(`No content found with slug: ${params.slug}`);

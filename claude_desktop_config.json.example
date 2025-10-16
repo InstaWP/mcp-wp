@@ -4,9 +4,24 @@
       "command": "npx",
       "args": ["-y", "@instawp/mcp-wp"],
       "env": {
+        "_comment_single_site": "Single site configuration (use this OR multi-site, not both)",
         "WORDPRESS_API_URL": "https://wpsite.instawp.xyz",
         "WORDPRESS_USERNAME": "username",
-        "WORDPRESS_PASSWORD": "Application Password"
+        "WORDPRESS_PASSWORD": "Application Password",
+
+        "_comment_multi_site": "Multi-site configuration (up to 10 sites supported)",
+        "_WORDPRESS_1_URL": "https://production-site.com",
+        "_WORDPRESS_1_USERNAME": "admin",
+        "_WORDPRESS_1_PASSWORD": "app_password_1",
+        "_WORDPRESS_1_ID": "production",
+        "_WORDPRESS_1_DEFAULT": "true",
+        "_WORDPRESS_1_ALIASES": "prod,main",
+
+        "_WORDPRESS_2_URL": "https://staging-site.com",
+        "_WORDPRESS_2_USERNAME": "admin",
+        "_WORDPRESS_2_PASSWORD": "app_password_2",
+        "_WORDPRESS_2_ID": "staging",
+        "_WORDPRESS_2_ALIASES": "stage,dev"
       }
     }
   }

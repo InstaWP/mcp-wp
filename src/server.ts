@@ -62,11 +62,6 @@ for (const tool of allTools) {
 async function main() {
     const { logToFile } = await import('./wordpress.js');
     logToFile('Starting WordPress MCP server...');
-    
-    if (!process.env.WORDPRESS_API_URL) {
-        logToFile('Missing required environment variables. Please check your .env file.');
-        process.exit(1);
-    }
 
     try {
         logToFile('Initializing WordPress client...');

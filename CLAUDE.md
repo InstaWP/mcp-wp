@@ -27,11 +27,32 @@ npm run clean
 ```
 
 ### Environment Setup
+
+#### Single Site Configuration
 Create a `.env` file in the project root with:
 ```env
 WORDPRESS_API_URL=https://your-wordpress-site.com
 WORDPRESS_USERNAME=wp_username
 WORDPRESS_PASSWORD=wp_app_password
+```
+
+#### Multi-Site Configuration
+For managing multiple WordPress sites:
+```env
+# Site 1 (Production)
+WORDPRESS_1_URL=https://production-site.com
+WORDPRESS_1_USERNAME=admin
+WORDPRESS_1_PASSWORD=app_password_1
+WORDPRESS_1_ID=production
+WORDPRESS_1_DEFAULT=true
+WORDPRESS_1_ALIASES=prod,main
+
+# Site 2 (Staging)
+WORDPRESS_2_URL=https://staging-site.com
+WORDPRESS_2_USERNAME=admin
+WORDPRESS_2_PASSWORD=app_password_2
+WORDPRESS_2_ID=staging
+WORDPRESS_2_ALIASES=stage,dev
 ```
 
 The app password can be generated from WordPress admin panel following the [Application Passwords guide](https://make.wordpress.org/core/2020/11/05/application-passwords-integration-guide#Getting-Credentials).
@@ -46,17 +67,26 @@ The app password can be generated from WordPress admin panel following the [Appl
    - Uses StdioServerTransport for communication with Claude Desktop
    - Validates environment variables and establishes WordPress connection on startup
 
-2. **WordPress Client (`src/wordpress.ts`)**:
+2. **Site Manager (`src/config/site-manager.ts`)**:
+   - Manages multiple WordPress site configurations
+   - Lazy loads site configurations from environment variables
+   - Maintains separate authenticated Axios clients for each site
+   - Provides site detection from context (domain mentions, aliases, site IDs)
+   - Supports both numbered multi-site config and legacy single-site config
+
+3. **WordPress Client (`src/wordpress.ts`)**:
    - Manages authenticated Axios instance for WordPress REST API calls
+   - Integrates with SiteManager for multi-site support
    - Handles authentication using Basic Auth with application passwords
-   - Provides `makeWordPressRequest()` wrapper for all API calls
+   - Provides `makeWordPressRequest()` wrapper for all API calls with optional `siteId` parameter
    - Includes logging to `logs/wordpress-api.log` for debugging
    - Special handler `searchWordPressPluginRepository()` for WordPress.org plugin search
 
-3. **Tool System (`src/tools/`)**: 
+4. **Tool System (`src/tools/`)**: 
    - Each WordPress entity (posts, pages, media, etc.) has its own module
    - Each module exports tools array and handlers object
    - Tools use Zod schemas for input validation and type safety
+   - All tools support optional `site_id` parameter for multi-site support
    - All tools are aggregated in `src/tools/index.ts`
 
 ### Tool Pattern
@@ -115,6 +145,11 @@ Handles ALL taxonomies (categories, tags, custom taxonomies) with a single set o
 - `assign_terms_to_content` - Assign terms to any content type
 - `get_content_terms` - Get all terms for any content
 
+#### **Site Management Tools** (`site-management.ts`) - 3 tools
+- `list_sites` - List all configured WordPress sites
+- `get_site` - Get details about a specific site
+- `test_site` - Test connection to a WordPress site
+
 #### **Other Specialized Tools**
 - **Media** (`media.ts`): Media library management (~5 tools)
 - **Users** (`users.ts`): User management (~5 tools)
@@ -158,6 +193,20 @@ All taxonomy operations use a single `taxonomy` parameter:
   "taxonomy": "skill"            // for custom taxonomies
 }
 ```
+
+#### Multi-Site Support
+All tools accept an optional `site_id` parameter to target specific sites:
+```json
+{
+  "content_type": "post",
+  "site_id": "production"  // Optional - targets specific site
+}
+```
+
+If `site_id` is not provided, the default site is used. Sites can be managed via:
+- `list_sites` - See all configured sites
+- `get_site` - Get details about a site
+- `test_site` - Test connection to a site
 
 ## TypeScript Configuration
 

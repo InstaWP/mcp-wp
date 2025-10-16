@@ -16,7 +16,16 @@ This is a Model Context Protocol (MCP) server for WordPress, allowing you to int
 
 ## Features
 
-This server currently provides tools to interact with core WordPress data:
+This server provides tools to interact with core WordPress data and supports **multi-site management** - manage multiple WordPress sites from a single MCP server instance.
+
+### **Multi-Site Management** (3 tools)
+Manage multiple WordPress sites from a single MCP server:
+
+*   `list_sites`: List all configured WordPress sites
+*   `get_site`: Get details about a specific site configuration
+*   `test_site`: Test connection to a specific WordPress site
+
+All content and taxonomy tools support an optional `site_id` parameter to target specific sites.
 
 ### **Unified Content Management** (8 tools)
 Handles ALL content types (posts, pages, custom post types) with a single set of intelligent tools:
@@ -103,6 +112,55 @@ All taxonomy operations use a single `taxonomy` parameter:
 }
 ```
 
+## Configuration
+
+### Single Site Configuration
+
+For managing a single WordPress site, use the following environment variables:
+
+```env
+WORDPRESS_API_URL=https://your-wordpress-site.com
+WORDPRESS_USERNAME=wp_username
+WORDPRESS_PASSWORD=wp_app_password
+```
+
+### Multi-Site Configuration
+
+To manage multiple WordPress sites from a single MCP server, use numbered environment variables:
+
+```env
+# Site 1 (Production)
+WORDPRESS_1_URL=https://production-site.com
+WORDPRESS_1_USERNAME=admin
+WORDPRESS_1_PASSWORD=app_password_1
+WORDPRESS_1_ID=production
+WORDPRESS_1_DEFAULT=true
+WORDPRESS_1_ALIASES=prod,main
+
+# Site 2 (Staging)
+WORDPRESS_2_URL=https://staging-site.com
+WORDPRESS_2_USERNAME=admin
+WORDPRESS_2_PASSWORD=app_password_2
+WORDPRESS_2_ID=staging
+WORDPRESS_2_ALIASES=stage,dev
+
+# Site 3 (Development)
+WORDPRESS_3_URL=https://dev-site.com
+WORDPRESS_3_USERNAME=admin
+WORDPRESS_3_PASSWORD=app_password_3
+WORDPRESS_3_ID=development
+```
+
+**Multi-Site Configuration Options:**
+- `WORDPRESS_N_URL`: WordPress site URL (required)
+- `WORDPRESS_N_USERNAME`: WordPress username (required)
+- `WORDPRESS_N_PASSWORD`: WordPress application password (required)
+- `WORDPRESS_N_ID`: Site identifier (optional, defaults to `siteN`)
+- `WORDPRESS_N_DEFAULT`: Set to `true` to make this the default site (optional, first site is default)
+- `WORDPRESS_N_ALIASES`: Comma-separated aliases for site detection (optional)
+
+The server supports up to 10 sites. When using multi-site configuration, all tools accept an optional `site_id` parameter to target specific sites.
+
 ## Using with npx and .env file
 
 You can run this MCP server directly using npx without installing it globally:
@@ -111,13 +169,7 @@ You can run this MCP server directly using npx without installing it globally:
 npx -y @instawp/mcp-wp
 ```
 
-Make sure you have a `.env` file in your current directory with the following variables:
-
-```env
-WORDPRESS_API_URL=https://your-wordpress-site.com
-WORDPRESS_USERNAME=wp_username
-WORDPRESS_PASSWORD=wp_app_password
-```
+Make sure you have a `.env` file in your current directory with the configuration variables shown above.
 
 ## Development
 
@@ -145,12 +197,27 @@ WORDPRESS_PASSWORD=wp_app_password
 
 3.  **Create a `.env` file:**
 
-    Create a `.env` file in the root of your project directory and add your WordPress API credentials:
-
+    Create a `.env` file in the root of your project directory and add your WordPress API credentials.
+    
+    For a single site:
     ```env
     WORDPRESS_API_URL=https://your-wordpress-site.com
     WORDPRESS_USERNAME=wp_username
     WORDPRESS_PASSWORD=wp_app_password
+    ```
+    
+    For multiple sites:
+    ```env
+    WORDPRESS_1_URL=https://site1.com
+    WORDPRESS_1_USERNAME=admin
+    WORDPRESS_1_PASSWORD=app_password_1
+    WORDPRESS_1_ID=site1
+    WORDPRESS_1_DEFAULT=true
+    
+    WORDPRESS_2_URL=https://site2.com
+    WORDPRESS_2_USERNAME=admin
+    WORDPRESS_2_PASSWORD=app_password_2
+    WORDPRESS_2_ID=site2
     ```
 
     Replace the placeholders with your actual values.
@@ -202,10 +269,13 @@ src/
 ├── server.ts                    # MCP server entry point
 ├── wordpress.ts                 # WordPress REST API client
 ├── cli.ts                      # CLI interface
+├── config/
+│   └── site-manager.ts         # Multi-site management
 ├── types/
 │   └── wordpress-types.ts      # TypeScript definitions
 └── tools/
     ├── index.ts                # Tool aggregation
+    ├── site-management.ts      # Site management (3 tools)
     ├── unified-content.ts      # Universal content management (8 tools)
     ├── unified-taxonomies.ts   # Universal taxonomy management (8 tools)
     ├── media.ts               # Media management (~5 tools)
@@ -217,6 +287,7 @@ src/
 
 ### Key Features
 
+- **Multi-Site Support**: Manage multiple WordPress sites from a single MCP server instance
 - **Smart URL Resolution**: Automatically detect content types from URLs and find corresponding content
 - **Universal Content Management**: Single set of tools handles posts, pages, and custom post types
 - **Universal Taxonomy Management**: Single set of tools handles categories, tags, and custom taxonomies
