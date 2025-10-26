@@ -69,8 +69,10 @@ Handles ALL taxonomies (categories, tags, custom taxonomies) with a single set o
     *   `deactivate_plugin`: Deactivate a plugin.
     *   `create_plugin`: Create a new plugin.
 *   **Plugin Repository:**
-    *   `search_plugins`: Search for plugins in the WordPress.org repository.
-    *   `get_plugin_info`: Get detailed information about a plugin from the repository.
+  *   `search_plugins`: Search for plugins in the WordPress.org repository.
+  *   `get_plugin_info`: Get detailed information about a plugin from the repository.
+*   **Database Queries:**
+  *   `execute_sql_query`: Execute read-only SQL queries against the WordPress database (requires custom endpoint setup).
 
 ### **Key Advantages**
 
@@ -117,6 +119,67 @@ Make sure you have a `.env` file in your current directory with the following va
 WORDPRESS_API_URL=https://your-wordpress-site.com
 WORDPRESS_USERNAME=wp_username
 WORDPRESS_PASSWORD=wp_app_password
+
+# Optional: Custom SQL query endpoint (default: /mcp/v1/query)
+WORDPRESS_SQL_ENDPOINT=/mcp/v1/query
+```
+
+## Enabling SQL Query Tool (Optional)
+
+The `execute_sql_query` tool allows you to run read-only SQL queries against your WordPress database. This is an optional feature that requires adding a custom REST API endpoint to your WordPress site.
+
+**Security Notes:** 
+- This tool only accepts read-only queries (SELECT, WITH...SELECT, EXPLAIN) for safety
+- Queries containing INSERT, UPDATE, DELETE, DROP, or other modifying statements will be rejected
+- Multi-statement queries are blocked to prevent SQL injection
+- Queries and results are logged to `logs/wordpress-api.log` - avoid including sensitive data in queries
+- This tool requires admin-level permissions (`manage_options` capability)
+
+**Configuration:** By default, the tool expects the endpoint at `/mcp/v1/query`. You can customize this by setting the `WORDPRESS_SQL_ENDPOINT` environment variable (e.g., `WORDPRESS_SQL_ENDPOINT=/custom/v1/query`).
+
+To enable this feature, add the following code to your WordPress site (via a custom plugin or your theme's `functions.php`):
+
+```php
+add_action('rest_api_init', function() {
+    register_rest_route('mcp/v1', '/query', array(
+        'methods' => 'POST',
+        'callback' => function($request) {
+            global $wpdb;
+            
+            $query = $request->get_param('query');
+            
+            // Additional security check
+            if (!current_user_can('manage_options')) {
+                return new WP_Error('unauthorized', 'Unauthorized', array('status' => 401));
+            }
+            
+            // Only allow SELECT queries
+            if (stripos(trim($query), 'SELECT') !== 0) {
+                return new WP_Error('invalid_query', 'Only SELECT queries allowed', array('status' => 400));
+            }
+            
+            $results = $wpdb->get_results($query, ARRAY_A);
+            
+            if ($wpdb->last_error) {
+                return new WP_Error('query_error', $wpdb->last_error, array('status' => 400));
+            }
+            
+            return array(
+                'results' => $results,
+                'num_rows' => count($results)
+            );
+        },
+        'permission_callback' => function() {
+            return current_user_can('manage_options');
+        }
+    ));
+});
+```
+
+After adding this code, you can use the `execute_sql_query` tool to run queries like:
+
+```sql
+SELECT * FROM wp_posts WHERE post_type = 'post' AND post_status = 'publish' LIMIT 10
 ```
 
 ## Development
@@ -197,7 +260,7 @@ npm run dev
 
 The server uses a **unified tool architecture** to reduce complexity:
 
-```
+```text
 src/
 ├── server.ts                    # MCP server entry point
 ├── wordpress.ts                 # WordPress REST API client
@@ -212,7 +275,8 @@ src/
     ├── users.ts               # User management (~5 tools)
     ├── comments.ts            # Comment management (~5 tools)
     ├── plugins.ts             # Plugin management (~5 tools)
-    └── plugin-repository.ts   # WordPress.org plugin search (~2 tools)
+    ├── plugin-repository.ts   # WordPress.org plugin search (~2 tools)
+    └── sql-query.ts           # Database queries (1 tool)
 ```
 
 ### Key Features
