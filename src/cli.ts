@@ -23,7 +23,9 @@ function checkEnvironmentVariables() {
 
 // Main function to run the MCP server
 async function main() {
-  console.log('Starting WordPress MCP Server...');
+  // stderr only: the spawned server inherits this process's stdio, so stdout
+  // belongs to the MCP JSON-RPC channel and must stay clean.
+  console.error('Starting WordPress MCP Server...');
   
   // Check for .env file in current directory
   const envPath = path.join(process.cwd(), '.env');

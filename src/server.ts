@@ -10,16 +10,17 @@ import { z } from 'zod';
 import { zodToJsonSchema } from 'zod-to-json-schema';
 
 
-// Create MCP server instance
+// Create MCP server instance.
+// capabilities.tools must be the capability flags object, NOT a map of tool
+// definitions — server.tool() registration below handles tool advertisement.
+// Stuffing tool objects here serialized their zod schemas into every
+// initialize response (~65KB of internals per connection).
 const server = new McpServer({
     name: "wordpress",
     version: "0.0.1"
 }, {
     capabilities: {
-        tools: allTools.reduce((acc, tool) => {
-            acc[tool.name] = tool;
-            return acc;
-        }, {} as Record<string, any>)
+        tools: {}
     }
 });
 
@@ -40,24 +41,14 @@ for (const tool of allTools) {
         };
     };
     
-    // console.log(`Registering tool: ${tool.name}`);
-    // console.log(`Input schema: ${JSON.stringify(tool.inputSchema)}`);
-
-    // const zodSchema = z.any().optional();
-    // const jsonSchema = zodToJsonSchema(z.object(tool.inputSchema.properties as z.ZodRawShape));
-
-    // const schema = z.object(tool.inputSchema as z.ZodRawShape).catchall(z.unknown());
-    
-    // The inputSchema is already in JSON Schema format with properties
-    // server.tool(tool.name, tool.inputSchema.shape, wrappedHandler);
-    // const zodSchema = z.any().optional();
-    // const jsonSchema = zodToJsonSchema(z.object(tool.inputSchema.properties as z.ZodRawShape));
-    // const parsedSchema = z.any().optional().parse(jsonSchema);
-
+    // Tool modules define inputSchema.properties as zod shapes (see CLAUDE.md);
+    // passing raw JSON Schema here collapses the published schema to {}.
     const rawShape = tool.inputSchema.properties as z.ZodRawShape;
     // Cast bypasses TS2589: server.tool's generic resolves ShapeOutput<Args>
     // against the SDK's z3|z4 union schema type, exploding instantiation depth.
-    (server.tool as (name: string, schema: z.ZodRawShape, cb: typeof wrappedHandler) => unknown)(tool.name, rawShape, wrappedHandler);
+    (server.tool as (name: string, description: string, schema: z.ZodRawShape, cb: typeof wrappedHandler) => unknown)(
+        tool.name, tool.description ?? '', rawShape, wrappedHandler
+    );
 
 }
 
@@ -102,12 +93,20 @@ process.on('SIGINT', () => {
     process.exit(0);
 });
 process.on('uncaughtException', (error) => {
-    process.stderr.write(`[FATAL] Uncaught exception: ${error}\n`);
+    process.stderr.write(`[FATAL] Uncaught exception: ${error instanceof Error ? error.stack || error.message : error}\n`);
     process.exit(1);
 });
-process.on('unhandledRejection', (error) => {
-    process.stderr.write(`[FATAL] Unhandled rejection: ${error}\n`);
-    process.exit(1);
+// Do NOT exit on unhandled rejections: a stray promise rejection (e.g. a
+// background axios call outside a handler's try/catch) is not worth killing
+// the whole server over — that surfaces in clients as the server abruptly
+// disconnecting. Log it loudly instead.
+process.on('unhandledRejection', (reason) => {
+    process.stderr.write(`[ERROR] Unhandled rejection (server continuing): ${reason instanceof Error ? reason.stack || reason.message : reason}\n`);
+});
+// Always leave a trace of WHY the process is exiting, so client-side
+// "transport closed unexpectedly" messages can be correlated with a cause.
+process.on('exit', (code) => {
+    process.stderr.write(`[SHUTDOWN] Process exiting with code ${code}\n`);
 });
 
 main().catch((error) => {
