@@ -5,7 +5,7 @@ All notable changes to `@instawp/mcp-wp` are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.1.1] - 2026-08-19
 
 ### Fixed
 - **`execute_sql_query` no longer sends `User-Agent: Mozilla/5.0`.** The bare
@@ -57,5 +57,5 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Documented meta-field limitations for SEO plugin keys. (#19)
 - Documented WP Recipe Maker (WPRM) recipe-card support via `custom_fields`. (#20)
 
+[0.1.1]: https://github.com/InstaWP/mcp-wp/compare/v0.1.0...v0.1.1
 [0.1.0]: https://github.com/InstaWP/mcp-wp/releases/tag/v0.1.0
-[Unreleased]: https://github.com/InstaWP/mcp-wp/compare/v0.1.0...HEAD
