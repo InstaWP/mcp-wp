@@ -5,6 +5,21 @@ All notable changes to `@instawp/mcp-wp` are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.2] - 2026-08-19
+
+### Added
+- **Automated npm publishing.** Pushing a `vX.Y.Z` tag now builds, tests and publishes the
+  package with [provenance](https://docs.npmjs.com/generating-provenance-statements) via
+  `.github/workflows/release.yml`, and verifies the registry actually serves the new version.
+  Previously the package was published by hand, so a merged fix could sit unpublished
+  indefinitely. See "Releasing" in the README. (#32)
+- `repository`, `homepage` and `bugs` fields in `package.json` — the `repository` field is
+  required for provenance and was missing. (#32)
+
+### Note
+- 0.1.1 was tagged and released on GitHub but never published to npm; this is the first
+  published release containing the `execute_sql_query` User-Agent fix from #28.
+
 ## [0.1.1] - 2026-08-19
 
 ### Fixed
@@ -57,5 +72,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Documented meta-field limitations for SEO plugin keys. (#19)
 - Documented WP Recipe Maker (WPRM) recipe-card support via `custom_fields`. (#20)
 
+[0.1.2]: https://github.com/InstaWP/mcp-wp/compare/v0.1.1...v0.1.2
 [0.1.1]: https://github.com/InstaWP/mcp-wp/compare/v0.1.0...v0.1.1
 [0.1.0]: https://github.com/InstaWP/mcp-wp/releases/tag/v0.1.0
