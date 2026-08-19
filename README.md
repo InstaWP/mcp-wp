@@ -520,6 +520,8 @@ SELECT * FROM wp_posts WHERE post_type = 'post' AND post_status = 'publish' LIMI
 ### Prerequisites
 
 - **Node.js and npm:** Ensure you have Node.js (version 18 or higher) and npm installed.
+  Node 18 is enough to *run* the server. **Contributing** needs Node 20 or newer, because the
+  test tooling (Vitest 4) requires it — CI runs 20.x and 22.x.
 - **WordPress Site:** You need an active WordPress site with the REST API enabled.
 - **WordPress API Authentication:** Set up authentication for the WordPress REST API. This typically requires an authentication plugin or method (like Application Passwords).
 - **MCP Client:** You need an application that can communicate with the MCP Server. Currently, Claude Desktop is recommended.
