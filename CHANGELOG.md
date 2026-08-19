@@ -5,7 +5,7 @@ All notable changes to `@instawp/mcp-wp` are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.2.0] - 2026-08-19
 
 ### Added
 - **`WORDPRESS_USER_AGENT`.** Sets the user-agent on *every* outbound request — the WordPress REST
@@ -94,6 +94,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Documented meta-field limitations for SEO plugin keys. (#19)
 - Documented WP Recipe Maker (WPRM) recipe-card support via `custom_fields`. (#20)
 
+[0.2.0]: https://github.com/InstaWP/mcp-wp/compare/v0.1.2...v0.2.0
 [0.1.2]: https://github.com/InstaWP/mcp-wp/compare/v0.1.1...v0.1.2
 [0.1.1]: https://github.com/InstaWP/mcp-wp/compare/v0.1.0...v0.1.1
 [0.1.0]: https://github.com/InstaWP/mcp-wp/releases/tag/v0.1.0

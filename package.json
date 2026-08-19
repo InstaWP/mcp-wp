@@ -1,6 +1,6 @@
 {
   "name": "@instawp/mcp-wp",
-  "version": "0.1.2",
+  "version": "0.2.0",
   "description": "A Model Context Protocol server for interacting with WordPress.",
   "type": "module",
   "main": "./build/server.js",
