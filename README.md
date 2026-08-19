@@ -609,6 +609,36 @@ npm run test:watch  # watch mode
 
 Tests run on `pull_request` and on pushes to `main` via `.github/workflows/test.yml`.
 
+### Releasing
+
+Merging a fix does not reach anyone — npm keeps serving the last published version until a release
+runs. Publishing is automated by `.github/workflows/release.yml`, triggered by a version tag:
+
+```bash
+# on main, with the fix already merged:
+# 1. move the CHANGELOG's [Unreleased] block under a `[x.y.z] - <date>` heading and commit it
+# 2. bump and tag — `npm version` writes package.json, commits, and creates the vx.y.z tag
+npm version patch          # or minor / major
+# 3. push the commit and the tag; the tag is what triggers the publish
+git push origin main --follow-tags
+```
+
+Do the CHANGELOG edit *before* `npm version`. Amending the commit afterwards leaves the tag pointing
+at the pre-amend commit, and the workflow would publish from that.
+
+The workflow refuses to publish if the tag and `package.json` disagree, or if that version is
+already on npm; it then builds, runs the tests, publishes with
+[provenance](https://docs.npmjs.com/generating-provenance-statements), and confirms the registry
+actually serves the new version before reporting success.
+
+If a tag exists but the publish failed (or predates this workflow), re-run it from
+**Actions → Release → Run workflow** and pass the tag name — nothing else needs redoing.
+
+**Setup, once:** the workflow needs an npm automation token with publish rights on the `@instawp`
+scope, stored as the repository secret `NPM_TOKEN` (Settings → Secrets and variables → Actions).
+Alternatively, configure this repo as a [trusted publisher](https://docs.npmjs.com/trusted-publishers)
+on npmjs.com, which lets the publish authenticate over OIDC and makes the stored token unnecessary.
+
 ### Security
 
 - **Never commit your API keys or secrets to version control.**

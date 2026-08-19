@@ -1,0 +1,108 @@
+name: Release
+
+# Publishes the package to npm. Merging a fix never reaches users on its own —
+# npm keeps serving the previously published version until this runs.
+#
+# Normal path: push a `vX.Y.Z` tag on main (see "Releasing" in README.md).
+# Recovery path: run this workflow manually with the tag name, for when a tag is
+# already pushed but the publish failed or was never wired up.
+on:
+  push:
+    tags:
+      - 'v[0-9]+.[0-9]+.[0-9]+'
+      - 'v[0-9]+.[0-9]+.[0-9]+-*'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Existing tag to publish, e.g. v0.1.1'
+        required: true
+        type: string
+
+permissions:
+  contents: read
+  id-token: write # npm provenance
+
+jobs:
+  publish:
+    name: Publish to npm
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.tag || github.ref }}
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22.x'
+          registry-url: 'https://registry.npmjs.org'
+
+      # --ignore-scripts skips the `prepare` hook; the build runs explicitly below.
+      - name: Install dependencies
+        run: npm install --ignore-scripts
+
+      - name: Resolve and verify version
+        id: v
+        env:
+          TAG: ${{ inputs.tag || github.ref_name }}
+        run: |
+          set -euo pipefail
+          NAME=$(node -p "require('./package.json').name")
+          PKG=$(node -p "require('./package.json').version")
+          TAG_VERSION="${TAG#v}"
+
+          if [ "$PKG" != "$TAG_VERSION" ]; then
+            echo "::error::Tag $TAG says $TAG_VERSION but package.json says $PKG. Bump package.json and re-tag; publishing a mismatched version is unrecoverable (npm forbids reusing a version)."
+            exit 1
+          fi
+
+          # An already-published version cannot be republished, so fail here with
+          # a clear message rather than on npm's 403.
+          if npm view "$NAME@$PKG" version >/dev/null 2>&1; then
+            echo "::error::$NAME@$PKG is already on npm. Bump the version and tag again."
+            exit 1
+          fi
+
+          # A prerelease must not take over the `latest` dist-tag, which is what
+          # a bare `npm install` resolves to.
+          case "$PKG" in
+            *-*) NPM_TAG=next ;;
+            *)   NPM_TAG=latest ;;
+          esac
+
+          echo "name=$NAME" >> "$GITHUB_OUTPUT"
+          echo "version=$PKG" >> "$GITHUB_OUTPUT"
+          echo "npm_tag=$NPM_TAG" >> "$GITHUB_OUTPUT"
+          echo "Publishing $NAME@$PKG from $TAG under dist-tag $NPM_TAG"
+
+      - name: Build
+        run: npm run build
+
+      - name: Test
+        run: npm test
+
+      - name: Publish
+        run: npm publish --provenance --access public --tag "$NPM_TAG"
+        env:
+          NPM_TAG: ${{ steps.v.outputs.npm_tag }}
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+
+      # A green publish step is not proof the registry serves the version. Query
+      # the exact version rather than `latest`, which is cached and can lag by
+      # several minutes.
+      - name: Verify the published version
+        env:
+          NAME: ${{ steps.v.outputs.name }}
+          VERSION: ${{ steps.v.outputs.version }}
+        run: |
+          set -uo pipefail
+          for attempt in 1 2 3 4 5 6; do
+            if [ "$(npm view "$NAME@$VERSION" version 2>/dev/null)" = "$VERSION" ]; then
+              echo "$NAME@$VERSION is live on npm."
+              echo "Published \`$NAME@$VERSION\`" >> "$GITHUB_STEP_SUMMARY"
+              exit 0
+            fi
+            echo "Not visible yet (attempt $attempt/6); waiting 20s."
+            sleep 20
+          done
+          echo "::error::Published, but $NAME@$VERSION is still not resolvable after ~2 minutes. Check https://www.npmjs.com/package/$NAME before re-running — do NOT assume the publish failed."
+          exit 1
