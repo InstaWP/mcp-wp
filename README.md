@@ -424,6 +424,22 @@ WORDPRESS_SQL_ENDPOINT=/mcp/v1/query
 MCP_WP_STRIP_FIELDS=yoast_head,yoast_head_json
 ```
 
+## User Agent
+
+Every outbound request this server makes — the WordPress REST client used by all tools, the SQL
+endpoint, the two api.wordpress.org lookups, and remote media downloads — sends axios's default
+`axios/<version>` user-agent.
+
+Set `WORDPRESS_USER_AGENT` to override it everywhere:
+
+```
+WORDPRESS_USER_AGENT=MyAgency-MCP/1.0 (+https://example.com)
+```
+
+Leave it unset unless a CDN or WAF in front of your site rejects the default; an empty or
+whitespace-only value is treated as unset. Avoid a bare `Mozilla/5.0` — it is a well-known bot
+signature and is exactly what several edges block (see #28), which is why nothing here sends one.
+
 ## Response Trimming
 
 By default the server strips the top-level `yoast_head` and `yoast_head_json`

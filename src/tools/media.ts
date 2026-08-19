@@ -5,6 +5,7 @@ import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import { Tool } from '@modelcontextprotocol/sdk/types.js';
 import { makeWordPressRequest } from '../wordpress.js';
+import { userAgentHeader } from '../config/user-agent.js';
 import { WPMedia } from '../types/wordpress-types.js';
 import { z } from 'zod';
 
@@ -254,7 +255,10 @@ async function loadUploadFromUrl(sourceUrl: string, explicitTitle?: string): Pro
     throw new Error('source_url must be an absolute http or https URL');
   }
 
-  const response = await axios.get<ArrayBuffer>(sourceUrl, { responseType: 'arraybuffer' });
+  const response = await axios.get<ArrayBuffer>(sourceUrl, {
+    responseType: 'arraybuffer',
+    headers: userAgentHeader()
+  });
   const contentTypeHeader = response.headers['content-type'];
   const mimeType = normalizeMimeType(typeof contentTypeHeader === 'string' ? contentTypeHeader : undefined);
   const originalFilename = deriveFilenameFromUrl(sourceUrl, mimeType);

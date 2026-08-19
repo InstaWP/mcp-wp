@@ -2,6 +2,7 @@
 import * as dotenv from 'dotenv';
 import axios, { AxiosInstance, AxiosRequestConfig } from 'axios';
 import { siteManager } from './config/site-manager.js';
+import { userAgentHeader } from './config/user-agent.js';
 
 // Legacy global WordPress API client instance for backward compatibility
 let wpClient: AxiosInstance;
@@ -206,7 +207,8 @@ Data: ${JSON.stringify(requestData, null, 2)}
 
     const response = await axios.post(apiUrl, requestData, {
       headers: {
-        'Content-Type': 'application/json'
+        'Content-Type': 'application/json',
+        ...userAgentHeader()
       }
     });
     

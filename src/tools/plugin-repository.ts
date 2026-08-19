@@ -1,5 +1,6 @@
 // src/tools/plugin-repository.ts
 import { Tool } from '@modelcontextprotocol/sdk/types.js';
+import { userAgentHeader } from '../config/user-agent.js';
 import { searchWordPressPluginRepository } from '../wordpress.js';
 import { z } from 'zod';
 import { zodToJsonSchema } from 'zod-to-json-schema';
@@ -118,7 +119,8 @@ export const pluginRepositoryHandlers = {
       const axios = (await import('axios')).default;
       const response = await axios.post(apiUrl, requestData, {
         headers: {
-          'Content-Type': 'application/json'
+          'Content-Type': 'application/json',
+          ...userAgentHeader()
         }
       });
       

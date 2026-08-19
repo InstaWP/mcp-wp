@@ -1,4 +1,5 @@
 import axios, { AxiosInstance } from 'axios';
+import { userAgentHeader } from './user-agent.js';
 import { logToFile } from '../wordpress.js';
 
 export interface SiteConfig {
@@ -205,7 +206,8 @@ export class SiteManager {
       baseURL,
       headers: {
         'Content-Type': 'application/json',
-        'Authorization': `Basic ${auth}`
+        'Authorization': `Basic ${auth}`,
+        ...userAgentHeader()
       }
     });
 

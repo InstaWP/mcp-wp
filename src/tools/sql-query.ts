@@ -3,6 +3,7 @@ import { z } from 'zod';
 import { Tool } from '@modelcontextprotocol/sdk/types.js';
 import axios from 'axios';
 import { siteManager } from '../config/site-manager.js';
+import { userAgentHeader } from '../config/user-agent.js';
 
 // Schema for SQL query execution
 const executeSqlQuerySchema = z.object({
@@ -101,7 +102,8 @@ export const sqlQueryHandlers = {
       const response = await axios.post(url, { query }, {
         headers: {
           'Content-Type': 'application/json',
-          'Authorization': `Basic ${auth}`
+          'Authorization': `Basic ${auth}`,
+          ...userAgentHeader()
         },
         timeout: 30000
       });
@@ -121,6 +123,39 @@ export const sqlQueryHandlers = {
 
     } catch (error: any) {
       const sqlPath = process.env.WORDPRESS_SQL_ENDPOINT || '/mcp/v1/query';
+
+      if (error.response?.status === 403) {
+        // A 403 here is ambiguous, and the ambiguity is what made #28 hard to
+        // diagnose: the body is often a CDN challenge page, not a WordPress
+        // response, so the endpoint looks broken when only the request was
+        // filtered. Show the body so the caller can tell the two apart.
+        const raw = error.response?.data;
+        const body = typeof raw === 'string' ? raw : (raw === undefined ? '' : JSON.stringify(raw));
+        const snippet = body.length > 500 ? `${body.slice(0, 500)}\n...(truncated)` : body;
+
+        return {
+          toolResult: {
+            content: [{
+              type: 'text' as const,
+              text: `Error: SQL query request was rejected with HTTP 403.
+
+Two different things produce this:
+  1. WordPress rejected the credentials for the SQL endpoint.
+  2. A CDN or WAF in front of the site blocked the request before it reached
+     WordPress. The body below is then a challenge page ("Attention Required",
+     "Access denied", a Cloudflare ray ID) rather than anything WordPress sent.
+
+If it is (2), set WORDPRESS_USER_AGENT to a user-agent your edge allows, or
+allow-list the default one. See "Enabling SQL Query Tool" in README.md.
+
+Endpoint: ${sqlPath}
+Response body${body.length > 500 ? ' (truncated)' : ''}:
+${snippet || '(empty)'}`
+            }],
+            isError: true
+          }
+        };
+      }
 
       if (error.response?.status === 404) {
         return {

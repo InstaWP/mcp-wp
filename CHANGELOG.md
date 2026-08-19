@@ -5,6 +5,22 @@ All notable changes to `@instawp/mcp-wp` are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+- **`WORDPRESS_USER_AGENT`.** Sets the user-agent on *every* outbound request — the WordPress REST
+  client behind all tools, the SQL endpoint, both api.wordpress.org lookups, and remote media
+  downloads. Unset (the default) keeps axios's own `axios/<version>`, so behaviour is unchanged
+  unless you set it; an empty or whitespace-only value is treated as unset, since some edges block an
+  empty user-agent too. For users behind a CDN/WAF that rejects the default. (#30)
+
+### Changed
+- **`execute_sql_query` explains an HTTP 403 instead of just reporting it.** A 403 may be WordPress
+  rejecting the credentials *or* a CDN/WAF challenge page returned before the request reached
+  WordPress; the error now says so, shows the response body (truncated) so the two can be told apart,
+  and points at `WORDPRESS_USER_AGENT`. The bare `Request failed with status code 403` is what made
+  #28 hard to diagnose. (#30)
+
 ## [0.1.2] - 2026-08-19
 
 ### Added
