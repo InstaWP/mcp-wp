@@ -146,7 +146,7 @@ Two different things produce this:
      "Access denied", a Cloudflare ray ID) rather than anything WordPress sent.
 
 If it is (2), set WORDPRESS_USER_AGENT to a user-agent your edge allows, or
-allow-list the default one. See "Enabling SQL Query Tool" in README.md.
+allow-list the default one. See "User Agent" in README.md.
 
 Endpoint: ${sqlPath}
 Response body${body.length > 500 ? ' (truncated)' : ''}:
