@@ -5,6 +5,14 @@ All notable changes to `@instawp/mcp-wp` are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Security
+- **Bumped `vitest` to `^4.1.11`** (dev dependency), clearing GHSA-5xrq-8626-4rwp — a critical
+  advisory against `vitest < 3.2.6` (arbitrary file read/execute while the Vitest UI server is
+  listening) — along with four moderate/high advisories in the bundled `vite` / `vite-node` /
+  `esbuild` / `@vitest/mocker` chain. Dev-only: none of these ship in the published package.
+
 ## [0.1.2] - 2026-08-19
 
 ### Added
