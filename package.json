@@ -54,7 +54,7 @@
     "rimraf": "^5.0.5",
     "tsx": "^4.7.1",
     "typescript": "^5.3.3",
-    "vitest": "^2.1.9"
+    "vitest": "^4.1.11"
   },
   "publishConfig": {
     "access": "public"
