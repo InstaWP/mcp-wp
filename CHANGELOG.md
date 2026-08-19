@@ -5,6 +5,15 @@ All notable changes to `@instawp/mcp-wp` are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+- **`execute_sql_query` no longer sends `User-Agent: Mozilla/5.0`.** The bare
+  `Mozilla/5.0` is a well-known bot signature that CDNs/WAFs (WP Engine,
+  Cloudflare bot protection) block with a 403 challenge page, so the tool failed
+  against healthy, correctly authenticated SQL endpoints. It now sends no
+  `User-Agent` override, matching every other tool in the package. (#28)
+
 ## [0.1.0] - 2026-06-15
 
 ### Added

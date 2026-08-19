@@ -93,11 +93,14 @@ export const sqlQueryHandlers = {
 
       const auth = Buffer.from(`${site.username}:${site.password}`).toString('base64');
 
+      // No User-Agent override: a bare `Mozilla/5.0` is a well-known bot
+      // signature that CDNs/WAFs block with a 403 challenge page. Letting axios
+      // send its default also matches every other tool, which goes through
+      // makeWordPressRequest and sets no User-Agent.
       const response = await axios.post(url, { query }, {
         headers: {
           'Content-Type': 'application/json',
-          'Authorization': `Basic ${auth}`,
-          'User-Agent': 'Mozilla/5.0'
+          'Authorization': `Basic ${auth}`
         },
         timeout: 30000
       });
