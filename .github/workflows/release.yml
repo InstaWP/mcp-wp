@@ -22,16 +22,21 @@ permissions:
   contents: read
   id-token: write # npm provenance
 
+# Two tags pushed back to back must not publish concurrently.
+concurrency:
+  group: release
+  cancel-in-progress: false
+
 jobs:
   publish:
     name: Publish to npm
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           ref: ${{ inputs.tag || github.ref }}
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: '22.x'
           registry-url: 'https://registry.npmjs.org'
@@ -44,8 +49,16 @@ jobs:
         id: v
         env:
           TAG: ${{ inputs.tag || github.ref_name }}
+          NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
         run: |
           set -euo pipefail
+
+          # Fail before install/build/test rather than on npm's opaque ENEEDAUTH.
+          if [ -z "${NPM_TOKEN:-}" ]; then
+            echo "::error::NPM_TOKEN is not set. Add an npm automation token with publish rights on @instawp under Settings -> Secrets and variables -> Actions."
+            exit 1
+          fi
+
           NAME=$(node -p "require('./package.json').name")
           PKG=$(node -p "require('./package.json').version")
           TAG_VERSION="${TAG#v}"
@@ -101,8 +114,10 @@ jobs:
               echo "Published \`$NAME@$VERSION\`" >> "$GITHUB_STEP_SUMMARY"
               exit 0
             fi
-            echo "Not visible yet (attempt $attempt/6); waiting 20s."
-            sleep 20
+            if [ "$attempt" -lt 6 ]; then
+              echo "Not visible yet (attempt $attempt/6); waiting 20s."
+              sleep 20
+            fi
           done
           echo "::error::Published, but $NAME@$VERSION is still not resolvable after ~2 minutes. Check https://www.npmjs.com/package/$NAME before re-running — do NOT assume the publish failed."
           exit 1

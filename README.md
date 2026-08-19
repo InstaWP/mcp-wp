@@ -632,12 +632,26 @@ already on npm; it then builds, runs the tests, publishes with
 actually serves the new version before reporting success.
 
 If a tag exists but the publish failed (or predates this workflow), re-run it from
-**Actions → Release → Run workflow** and pass the tag name — nothing else needs redoing.
+**Actions → Release → Run workflow**, leaving the branch selector on `main` (that is where the
+workflow file is read from) and passing the tag name in the input. Two caveats: the tag's tree must
+already contain the `repository` field described below, and the provenance attestation records the
+ref the workflow was *dispatched from*, not the tag — so for a real release, prefer re-cutting a
+version and using the tag-push path.
+
+If the publish succeeds but the verification step goes red (a registry that stayed slow for more
+than two minutes), check npmjs.com before doing anything: the version is published, and re-running
+will now fail the already-on-npm guard by design. Nothing needs fixing in that case.
 
 **Setup, once:** the workflow needs an npm automation token with publish rights on the `@instawp`
-scope, stored as the repository secret `NPM_TOKEN` (Settings → Secrets and variables → Actions).
-Alternatively, configure this repo as a [trusted publisher](https://docs.npmjs.com/trusted-publishers)
-on npmjs.com, which lets the publish authenticate over OIDC and makes the stored token unnecessary.
+scope, stored as the repository secret `NPM_TOKEN` (Settings → Secrets and variables → Actions). An
+*automation* token specifically — a classic publish token fails in CI on a 2FA-enforced account.
+
+npm's [trusted publishing](https://docs.npmjs.com/trusted-publishers) would remove the stored token
+entirely, but it needs npm ≥ 11.5.1 and `setup-node` currently ships npm 10.x with Node 22, so it is
+not usable here without also upgrading npm inside the job.
+
+Publishing with provenance requires the `repository` field in `package.json` to match this repo — the
+registry rejects the publish otherwise. Don't remove it.
 
 ### Security
 
