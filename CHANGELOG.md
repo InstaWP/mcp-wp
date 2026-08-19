@@ -58,3 +58,4 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Documented WP Recipe Maker (WPRM) recipe-card support via `custom_fields`. (#20)
 
 [0.1.0]: https://github.com/InstaWP/mcp-wp/releases/tag/v0.1.0
+[Unreleased]: https://github.com/InstaWP/mcp-wp/compare/v0.1.0...HEAD
