@@ -373,22 +373,19 @@ function convertHtmlToBlocks(html: string): string {
         blocks.push(`<!-- wp:paragraph -->\n${element}\n<!-- /wp:paragraph -->`);
         break;
       case 'h1':
-        blocks.push(`<!-- wp:heading {"level":1} -->\n${element}\n<!-- /wp:heading -->`);
-        break;
       case 'h2':
-        blocks.push(`<!-- wp:heading -->\n${element}\n<!-- /wp:heading -->`);
-        break;
       case 'h3':
-        blocks.push(`<!-- wp:heading {"level":3} -->\n${element}\n<!-- /wp:heading -->`);
-        break;
       case 'h4':
-        blocks.push(`<!-- wp:heading {"level":4} -->\n${element}\n<!-- /wp:heading -->`);
-        break;
       case 'h5':
-        blocks.push(`<!-- wp:heading {"level":5} -->\n${element}\n<!-- /wp:heading -->`);
-        break;
       case 'h6':
-        blocks.push(`<!-- wp:heading {"level":6} -->\n${element}\n<!-- /wp:heading -->`);
+        // Always emit the level explicitly. h2 used to be the lone bare case
+        // (Gutenberg's serializer omits the default level), which made
+        // conversion output inconsistent across heading levels and read as
+        // "the {"level":2} attribute got stripped" when existing content was
+        // round-tripped through this converter. An explicit default attribute
+        // is valid for the block parser, and a single deterministic form is
+        // worth more here than canonical minimalism.
+        blocks.push(`<!-- wp:heading {"level":${tagName.charAt(1)}} -->\n${element}\n<!-- /wp:heading -->`);
         break;
       case 'ul':
         blocks.push(`<!-- wp:list -->\n${element}\n<!-- /wp:list -->`);
