@@ -518,6 +518,61 @@ export function buildDroppedMetaWarning(droppedKeys: string[]): string {
   );
 }
 
+// One entry per term field whose write could not be confirmed from the
+// response WordPress sent back.
+export interface DroppedTermField {
+  field: 'categories' | 'tags';
+  requested: number[];
+  saved: number[] | null; // null: the response carries no such field at all
+  missing: number[];
+}
+
+// Compare the term IDs a write requested against the IDs the response reports
+// as saved. wp_set_object_terms() silently skips IDs that do not exist, and
+// /wp/v2 returns 200 with the survivors — so a partial term write is invisible
+// unless the response is checked. Detection mirrors the response-derived
+// check in assign_terms_to_content, but the SEVERITY deliberately diverges
+// from it: that tool writes nothing but terms, so a dropped term is a failed
+// call (isError). create/update also wrote title/content/etc., which DID
+// land, so this follows the dropped-meta-keys warning precedent above
+// instead — a loud warning on a successful result.
+export function detectDroppedTerms(
+  requested: { categories?: number | number[]; tags?: number | number[] } | undefined,
+  response: any
+): DroppedTermField[] {
+  const dropped: DroppedTermField[] = [];
+  for (const field of ['categories', 'tags'] as const) {
+    const value = requested?.[field];
+    if (value === undefined) {
+      continue;
+    }
+    // Normalized defensively; the tool schemas only pass arrays here.
+    const ids = Array.isArray(value) ? value : [value];
+    const echoed = response?.[field];
+    const saved = Array.isArray(echoed) ? (echoed as number[]) : null;
+    const missing = saved === null ? [...ids] : ids.filter((id) => !saved.includes(id));
+    if (missing.length > 0) {
+      dropped.push({ field, requested: [...ids], saved, missing });
+    }
+  }
+  return dropped;
+}
+
+export function buildDroppedTermsWarning(dropped: DroppedTermField[]): string {
+  return dropped
+    .map(({ field, requested, saved, missing }) =>
+      saved === null
+        ? `Warning: the response reports no "${field}" field, so none of the requested ` +
+          `${field} [${requested.join(', ')}] can be confirmed as saved. The taxonomy may not be ` +
+          `registered for this content type, or not exposed in REST — assign_terms_to_content ` +
+          `resolves custom taxonomies by rest_base if that is the case.`
+        : `Warning: WordPress saved ${field} [${saved.join(', ')}] but silently dropped ` +
+          `[${missing.join(', ')}] — term IDs it does not know. The rest of the write was applied. ` +
+          `Verify the IDs (list_terms) or create the terms first, then retry.`
+    )
+    .join('\n');
+}
+
 function validateContentEdit(edit: ContentEditParams) {
   const targetedOperations = new Set<ContentEditOperation>(['insert_before', 'insert_after', 'replace']);
 
@@ -1051,6 +1106,12 @@ export const unifiedContentHandlers = {
       if (droppedMeta.length > 0) {
         responseContent.unshift({ type: 'text', text: buildDroppedMetaWarning(droppedMeta) });
       }
+      // Check the assembled payload, not params: custom_fields can carry
+      // categories/tags into the request too.
+      const droppedTerms = detectDroppedTerms(contentData, response);
+      if (droppedTerms.length > 0) {
+        responseContent.unshift({ type: 'text', text: buildDroppedTermsWarning(droppedTerms) });
+      }
 
       return {
         toolResult: {
@@ -1088,6 +1149,12 @@ export const unifiedContentHandlers = {
       const droppedMeta = detectDroppedMetaKeys(params.meta, response);
       if (droppedMeta.length > 0) {
         responseContent.unshift({ type: 'text', text: buildDroppedMetaWarning(droppedMeta) });
+      }
+      // Check the assembled payload, not params: custom_fields can carry
+      // categories/tags into the request too.
+      const droppedTerms = detectDroppedTerms(updateData, response);
+      if (droppedTerms.length > 0) {
+        responseContent.unshift({ type: 'text', text: buildDroppedTermsWarning(droppedTerms) });
       }
 
       return {
