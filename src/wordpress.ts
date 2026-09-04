@@ -58,6 +58,44 @@ export async function initWordPress() {
   logToFile('WordPress client initialized successfully via SiteManager', 'info');
 }
 
+// Header names whose value authenticates the request. `Authorization` carries
+// `Basic base64(user:app-password)`, which is reversible with one command — so
+// logging it verbatim logs the WordPress application password in the clear.
+// logToFile writes to stderr (despite the name); for a stdio MCP server the host
+// client captures stderr into its own log files, so a debug run leaves the
+// credential sitting in the client's logs. Reported privately by Syed Anas
+// Mohiuddin.
+const REDACTED_HEADERS = new Set([
+  'authorization',
+  'proxy-authorization',
+  'cookie',
+  'set-cookie',
+  'x-api-key',
+  'x-auth-token'
+]);
+
+/**
+ * Replace the value of every credential-bearing header with a placeholder.
+ *
+ * Case-insensitive, because axios merges headers from several sources and does
+ * not normalize their case. Nested bags are walked too: `defaults.headers` also
+ * carries per-method sub-objects (`common`, `post`, …), and a header set there
+ * would otherwise be logged verbatim inside its parent.
+ */
+export function redactHeaders(headers: Record<string, any> | undefined): Record<string, any> {
+  const safe: Record<string, any> = {};
+  for (const [name, value] of Object.entries(headers || {})) {
+    if (REDACTED_HEADERS.has(name.toLowerCase())) {
+      safe[name] = '[REDACTED]';
+    } else if (value && typeof value === 'object' && !Array.isArray(value)) {
+      safe[name] = redactHeaders(value as Record<string, any>);
+    } else {
+      safe[name] = value;
+    }
+  }
+  return safe;
+}
+
 export function logToFile(message: string, level: 'debug' | 'info' | 'error' = 'debug') {
   // Enable logging to stderr (MCP uses stdout for protocol, so we use stderr for logs)
   // Can be disabled by setting DISABLE_LOGGING=true or controlled via LOG_LEVEL
@@ -134,7 +172,7 @@ REQUEST:
 URL: ${fullUrl}
 Method: ${method}
 Site: ${options?.siteId || 'default'}
-Headers: ${JSON.stringify({...client.defaults.headers, ...requestConfig.headers}, null, 2)}
+Headers: ${JSON.stringify(redactHeaders({...client.defaults.headers, ...requestConfig.headers}), null, 2)}
 Data: ${options?.isFormData ? '(FormData not shown)' : JSON.stringify(data, null, 2)}
 `;
     logToFile(requestLog, 'debug');

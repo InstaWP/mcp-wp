@@ -481,8 +481,24 @@ The `execute_sql_query` tool allows you to run read-only SQL queries against you
 - This tool only accepts read-only queries (SELECT, WITH...SELECT, EXPLAIN) for safety
 - Queries containing INSERT, UPDATE, DELETE, DROP, or other modifying statements will be rejected
 - Multi-statement queries are blocked to prevent SQL injection
-- Queries and results are logged to `logs/wordpress-api.log` - avoid including sensitive data in queries
+- SELECT syntax that reaches the **filesystem of the database host** — `INTO OUTFILE`, `INTO DUMPFILE`,
+  `LOAD_FILE()` — is rejected. These are valid inside a SELECT, so a "starts with SELECT" check alone
+  does not stop an arbitrary file read, or a webshell being written into `wp-content/uploads`
+- A query that cannot be read unambiguously is rejected rather than guessed at: an unterminated string
+  or comment, a backslash-escaped quote inside a literal (whose meaning depends on the server's
+  `NO_BACKSLASH_ESCAPES` sql_mode — use `''` to embed a quote instead), or a MySQL executable comment
 - This tool requires admin-level permissions (`manage_options` capability)
+
+**These checks run in the MCP client, so they are not a boundary on their own.** Anything holding the
+credentials can call the REST endpoint directly, so the endpoint must enforce its own limits — the
+example below repeats the checks server-side. The strongest limit is not a pattern at all: give the
+endpoint a MySQL user with `SELECT` only and **no `FILE` privilege** (or set `secure_file_priv`), so a
+bypass has nothing left to reach.
+
+**Logging:** nothing is logged unless you set `WORDPRESS_LOG_LEVEL=debug` (the default is `error`).
+Debug output goes to **stderr**, which for a stdio MCP server the host client (Claude Desktop and
+others) captures into its own log files. Credential headers such as `Authorization` and `Cookie` are
+redacted; query text and result rows are not — avoid putting sensitive data in queries.
 
 **Configuration:** By default, the tool expects the endpoint at `/mcp/v1/query`. You can customize this by setting the `WORDPRESS_SQL_ENDPOINT` environment variable (e.g., `WORDPRESS_SQL_ENDPOINT=/custom/v1/query`).
 
@@ -505,6 +521,47 @@ add_action('rest_api_init', function() {
             // Only allow SELECT queries
             if (stripos(trim($query), 'SELECT') !== 0) {
                 return new WP_Error('invalid_query', 'Only SELECT queries allowed', array('status' => 400));
+            }
+
+            // Do not trust the caller's validation. Strip string literals, quoted
+            // identifiers and comments first, so a keyword inside a literal is not a
+            // false positive and one split by a comment is not a bypass (MySQL treats
+            // a comment as whitespace). A /*! ... */ comment is EXECUTED by MySQL, so
+            // it is refused rather than stripped.
+            if (strpos($query, '/*!') !== false) {
+                return new WP_Error('invalid_query', 'Executable comments are not allowed', array('status' => 400));
+            }
+
+            $normalized = preg_replace(
+                array(
+                    '#/\*.*?\*/#s',            // /* block comments */
+                    '/--\s[^\n]*/',            // -- line comments
+                    '/#[^\n]*/',               // # line comments
+                    "/'(?:[^'\\\\]|\\\\.|'')*'/s", // 'string literals'
+                    '/`(?:[^`]|``)*`/s',       // `quoted identifiers`
+                ),
+                ' ',
+                $query
+            );
+
+            // preg_replace() returns null when it hits a backtrack/recursion limit.
+            if (!is_string($normalized)) {
+                return new WP_Error('invalid_query', 'Query could not be validated', array('status' => 400));
+            }
+
+            // One statement only.
+            if (preg_match('/;\s*\S/', $normalized)) {
+                return new WP_Error('invalid_query', 'Only one statement is allowed', array('status' => 400));
+            }
+
+            // INTO OUTFILE / INTO DUMPFILE write a file on the database host and
+            // LOAD_FILE() reads one; all three are valid SELECT syntax.
+            if (preg_match('/\b(INTO|LOAD_FILE)\b/i', $normalized)) {
+                return new WP_Error('invalid_query', 'Filesystem access is not allowed', array('status' => 400));
+            }
+
+            if (preg_match('/\b(DROP|DELETE|UPDATE|INSERT|TRUNCATE|ALTER|CREATE|GRANT|REVOKE)\b/i', $normalized)) {
+                return new WP_Error('invalid_query', 'Only read-only queries are allowed', array('status' => 400));
             }
 
             $results = $wpdb->get_results($query, ARRAY_A);

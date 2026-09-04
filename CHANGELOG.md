@@ -5,6 +5,40 @@ All notable changes to `@instawp/mcp-wp` are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Security
+- **`execute_sql_query`'s read-only gate no longer lets a SELECT reach the filesystem.** `INTO OUTFILE`,
+  `INTO DUMPFILE` and `LOAD_FILE()` are valid SELECT syntax and matched none of the old checks (a
+  `startsWith('SELECT')` prefix test, a multi-statement test, and a fixed DDL/DML blocklist), so
+  `SELECT LOAD_FILE('/etc/passwd')` and `SELECT '<?php … ?>' INTO DUMPFILE '…/uploads/pwn.php'` both
+  passed validation while the tool description promised "only SELECT queries are allowed". All three
+  are now rejected. Every check also runs against a *normalized* query — string literals, quoted
+  identifiers and comments collapsed to whitespace — so a keyword hidden inside a literal is no longer
+  a false positive (`SELECT … WHERE title = 'how to drop a table'` used to be refused) and one split
+  by a comment is not a bypass. A query that cannot be read unambiguously is rejected rather than
+  guessed at: an unterminated string or comment, a backslash-escaped quote inside a literal (its
+  meaning depends on the server's `NO_BACKSLASH_ESCAPES` sql_mode), or a `/*!` MySQL executable
+  comment, whose contents the server runs. The example WordPress endpoint in `README.md` now repeats
+  these checks server-side, since the client's validation is not a boundary.
+- **Credential headers are redacted from debug logging.** `Authorization: Basic base64(user:app-password)`
+  was logged verbatim at `debug` level, and base64 is reversible — so `WORDPRESS_LOG_LEVEL=debug` put
+  the WordPress application password in the clear. Despite its name `logToFile` writes to stderr, which
+  for a stdio MCP server the host client captures into its own log files. `Authorization`, `Cookie` and
+  their siblings now log as `[REDACTED]`.
+
+Both reported privately by Syed Anas Mohiuddin.
+
+### Fixed
+- **`README.md` no longer claims queries are logged to `logs/wordpress-api.log`.** No such file is
+  written: logging goes to stderr, only when `WORDPRESS_LOG_LEVEL=debug` is set (the default is
+  `error`). Same correction in `CLAUDE.md`.
+
+### Added
+- **`SECURITY.md`** — a private disclosure route (GitHub private vulnerability reporting, plus
+  `support@instawp.com`), response targets, and scope. The reporter above had to find us through the
+  support desk because the repository named no security contact.
+
 ## [0.2.0] - 2026-08-19
 
 ### Added
