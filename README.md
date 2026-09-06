@@ -32,7 +32,7 @@ All content, taxonomy, media, plugin, comment, and user tools support an optiona
 
 Handles ALL content types (posts, pages, custom post types) with a single set of intelligent tools:
 
-- `list_content`: List any content type with filtering and pagination
+- `list_content`: List any content type with filtering and pagination. Supports `fields` to select which top-level fields come back (e.g. `["id", "slug", "meta"]`) — see [Selecting fields](#selecting-fields).
 - `get_content`: Get specific content by ID and type
 - `create_content`: Create new content of any type
 - `update_content`: Update existing content of any type, including targeted partial edits
@@ -274,6 +274,31 @@ error, naming the exact term IDs WordPress silently dropped.
 #### Recipe Cards (WP Recipe Maker)
 
 Sites running [WP Recipe Maker](https://wordpress.org/plugins/wp-recipe-maker/) (WPRM) store recipe cards in a separate `wprm_recipe` custom post type referenced by shortcode from the surrounding blog post. The unified content tools handle these recipes directly — no recipe-specific tool family is needed.
+
+### Selecting fields
+
+`list_content` returns every field of every item by default, and for post types
+that carry long bodies that is almost always more than the caller wants — a
+listing of four neighbourhood guides can run to 90KB of rendered HTML. Pass
+`fields` to ask WordPress for a subset:
+
+```json
+{ "content_type": "post", "per_page": 20, "fields": ["id", "slug", "meta"] }
+```
+
+This maps to WordPress's own [`_fields`](https://developer.wordpress.org/rest-api/using-the-rest-api/global-parameters/#_fields)
+parameter, so nested paths work too (`title.rendered`), and a requested field an
+item doesn't have is simply absent rather than an error.
+
+Useful selections:
+
+| Goal | `fields` |
+| --- | --- |
+| Inspect metadata (SEO keys, custom fields) | `["id", "slug", "meta"]` |
+| Build an index or a link list | `["id", "title", "link"]` |
+| Check publication state | `["id", "status", "modified"]` |
+
+Omit `fields` to get the full payload, which is the previous behaviour.
 
 **Reading recipes** — `get_content`, `list_content`, `find_content_by_url`, and `get_content_by_slug` all work with `content_type: "wprm_recipe"`. WPRM exposes the full structured recipe payload as a `recipe` field on the REST response, including ingredients, instructions, times, equipment, nutrition, notes, and rating.
 

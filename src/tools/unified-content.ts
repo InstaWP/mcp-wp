@@ -795,7 +795,15 @@ const listContentSchema = z.object({
   orderby: z.string().optional().describe("Sort content by parameter"),
   order: z.enum(['asc', 'desc']).optional().describe("Order sort attribute"),
   after: z.string().optional().describe("ISO8601 date string to get content published after this date"),
-  before: z.string().optional().describe("ISO8601 date string to get content published before this date")
+  before: z.string().optional().describe("ISO8601 date string to get content published before this date"),
+  fields: z.array(z.string().min(1)).nonempty().optional().describe(
+    "Limit each item to these top-level fields (WordPress `_fields`). A listing " +
+    "returns every field by default, including fully rendered `content`, which is " +
+    "usually far larger than what the caller needs. Ask for ['id','slug','meta'] to " +
+    "inspect metadata, or ['id','title','link'] to build an index. Nested paths such " +
+    "as 'title.rendered' are supported by WordPress. Requested fields the item does " +
+    "not have are simply absent from the response."
+  )
 });
 
 const getContentSchema = z.object({
@@ -964,7 +972,7 @@ type GetContentBySlugParams = z.infer<typeof getContentBySlugSchema>;
 export const unifiedContentTools: Tool[] = [
   {
     name: "list_content",
-    description: "Lists content of any type (posts, pages, or custom post types) with filtering and pagination",
+    description: "Lists content of any type (posts, pages, or custom post types) with filtering and pagination. Returns every field of every item by default, including fully rendered content — pass `fields` to select only what you need (e.g. ['id','slug','meta']), which is dramatically cheaper on large posts.",
     inputSchema: { type: "object", properties: listContentSchema.shape }
   },
   {
@@ -1015,9 +1023,17 @@ export const unifiedContentHandlers = {
   list_content: async (params: ListContentParams) => {
     try {
       const endpoint = await getContentEndpoint(params.content_type, params.site_id);
-      const { content_type, site_id, ...queryParams } = params;
+      const { content_type, site_id, fields, ...queryParams } = params;
 
-      const response = await makeWordPressRequest('GET', endpoint, queryParams, { siteId: site_id });
+      // WordPress spells this `_fields`, and ignores anything it doesn't
+      // recognise — so passing `fields` straight through would silently return
+      // the full payload instead of erroring. Map it explicitly.
+      const requestParams: Record<string, any> = { ...queryParams };
+      if (fields?.length) {
+        requestParams._fields = fields.join(',');
+      }
+
+      const response = await makeWordPressRequest('GET', endpoint, requestParams, { siteId: site_id });
 
       return {
         toolResult: {
