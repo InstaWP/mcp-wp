@@ -13,6 +13,10 @@ vi.mock('../../src/wordpress.js', () => ({
     return [];
   }),
   logToFile: vi.fn(),
+  resolveStripFields: (envValue?: string) =>
+    envValue === undefined
+      ? ['yoast_head', 'yoast_head_json']
+      : envValue.split(',').map(f => f.trim()).filter(Boolean),
 }));
 
 let listContent: (params: any) => Promise<any>;
@@ -48,8 +52,11 @@ describe('list_content field selection', () => {
   });
 
   // The bug this catches: sending `_fields=` (or `_fields=undefined`) when the
-  // caller didn't ask for a selection. WordPress treats an empty _fields as a
-  // request for no fields, so every item would come back stripped.
+  // caller didn't ask for a selection. WordPress parses _fields with
+  // wp_parse_list and ignores an empty one, so this would not fail loudly — it
+  // would quietly return the entire payload the caller was trying to avoid,
+  // looking like success. Verified against a live site: `_fields=` returns a
+  // byte-identical response to sending no _fields at all.
   it('omits _fields entirely when no selection is requested', async () => {
     await listContent({ content_type: 'post', per_page: 5 });
 
@@ -89,5 +96,40 @@ describe('list_content field selection', () => {
     await listContent({ content_type: 'post', fields: ['id', 'title.rendered'] });
 
     expect(lastListCall().params._fields).toBe('id,title.rendered');
+  });
+
+  // The bug this catches: every response passes through trimResponseFields,
+  // which deletes yoast_head/yoast_head_json (or whatever MCP_WP_STRIP_FIELDS
+  // names) AFTER WordPress returns them. A selection asking only for those came
+  // back as one empty object per item with isError false — indistinguishable
+  // from "this site has no Yoast data", and no way for the caller to tell.
+  it('errors instead of returning empty objects when every field is stripped', async () => {
+    const result = await listContent({ content_type: 'post', fields: ['yoast_head'] });
+
+    expect(result.toolResult.isError).toBe(true);
+    expect(result.toolResult.content[0].text).toContain('MCP_WP_STRIP_FIELDS');
+  });
+
+  it('still serves a selection that only partly overlaps the stripped fields', async () => {
+    const result = await listContent({
+      content_type: 'post',
+      fields: ['id', 'yoast_head'],
+    });
+
+    expect(result.toolResult.isError).toBe(false);
+    expect(lastListCall().params._fields).toBe('id,yoast_head');
+  });
+
+  it('honours a narrowed MCP_WP_STRIP_FIELDS', async () => {
+    const previous = process.env.MCP_WP_STRIP_FIELDS;
+    process.env.MCP_WP_STRIP_FIELDS = 'something_else';
+    try {
+      const result = await listContent({ content_type: 'post', fields: ['yoast_head'] });
+      expect(result.toolResult.isError).toBe(false);
+      expect(lastListCall().params._fields).toBe('yoast_head');
+    } finally {
+      if (previous === undefined) delete process.env.MCP_WP_STRIP_FIELDS;
+      else process.env.MCP_WP_STRIP_FIELDS = previous;
+    }
   });
 });

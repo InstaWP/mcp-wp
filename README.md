@@ -290,6 +290,14 @@ This maps to WordPress's own [`_fields`](https://developer.wordpress.org/rest-ap
 parameter, so nested paths work too (`title.rendered`), and a requested field an
 item doesn't have is simply absent rather than an error.
 
+Two behaviours worth knowing, both verified against a live site:
+
+- **A selection drops `_links`** unless you name it. The HAL `_links` block is a
+  field like any other, so `["id", "slug"]` returns no links.
+- **A selection naming only fields that don't exist returns empty objects**, not
+  an error and not an empty list — `_fields=typo` on a listing of two posts comes
+  back as `[{}, {}]`. Read that as "your field names were wrong", not "no posts".
+
 Useful selections:
 
 | Goal | `fields` |
@@ -298,7 +306,12 @@ Useful selections:
 | Build an index or a link list | `["id", "title", "link"]` |
 | Check publication state | `["id", "status", "modified"]` |
 
-Omit `fields` to get the full payload, which is the previous behaviour.
+Omit `fields` to get the full payload, which is the previous behaviour — minus
+whatever `MCP_WP_STRIP_FIELDS` removes (`yoast_head` and `yoast_head_json` by
+default). Those fields are deleted from every response after WordPress returns
+them, so a selection asking only for them would come back as empty objects;
+`list_content` errors in that case rather than returning a result that looks
+like missing data.
 
 **Reading recipes** — `get_content`, `list_content`, `find_content_by_url`, and `get_content_by_slug` all work with `content_type: "wprm_recipe"`. WPRM exposes the full structured recipe payload as a `recipe` field on the REST response, including ingredients, instructions, times, equipment, nutrition, notes, and rating.
 
