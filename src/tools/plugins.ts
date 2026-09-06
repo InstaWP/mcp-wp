@@ -11,22 +11,27 @@ import { zodToJsonSchema } from 'zod-to-json-schema';
 // Make schema empty since the WordPress REST API plugins endpoint doesn't accept parameters
 // in the same way as other endpoints
 const listPluginsSchema = z.object({
+  site_id: z.string().optional().describe("Site ID (for multi-site setups)"),
   status: z.enum(['active', 'inactive']).optional().default('active').describe("Filter plugins by status (active, inactive)")
 }).strict();
 
 const getPluginSchema = z.object({
+  site_id: z.string().optional().describe("Site ID (for multi-site setups)"),
   plugin: z.string().describe("Plugin slug (e.g., 'akismet', 'elementor', 'wordpress-seo')")
 }).strict();
 
 const activatePluginSchema = z.object({
+  site_id: z.string().optional().describe("Site ID (for multi-site setups)"),
   plugin: z.string().describe("Plugin slug (e.g., 'akismet', 'elementor', 'wordpress-seo')")
 }).strict();
 
 const deactivatePluginSchema = z.object({
+  site_id: z.string().optional().describe("Site ID (for multi-site setups)"),
   plugin: z.string().describe("Plugin slug (e.g., 'akismet', 'elementor', 'wordpress-seo')")
 }).strict();
 
 const createPluginSchema = z.object({
+  site_id: z.string().optional().describe("Site ID (for multi-site setups)"),
   slug: z.string({ required_error: "Plugin slug is required" }).describe("WordPress.org plugin directory slug, e.g., 'akismet', 'elementor', 'wordpress-seo'"),
   status: z.enum(['inactive', 'active']).optional().default('active').describe("Plugin activation status")
 }).strict();
@@ -70,7 +75,8 @@ export const pluginTools: Tool[] = [
 export const pluginHandlers = {
   list_plugins: async (params: z.infer<typeof listPluginsSchema>) => {
     try {
-      const response = await makeWordPressRequest("GET", "plugins", params);
+      const { site_id, ...query } = params;
+      const response = await makeWordPressRequest("GET", "plugins", query, { siteId: site_id });
       return {
         toolResult: {
           content: [{ type: "text", text: JSON.stringify(response, null, 2) }]
@@ -88,7 +94,7 @@ export const pluginHandlers = {
   },
   get_plugin: async (params: z.infer<typeof getPluginSchema>) => {
     try {
-      const response = await makeWordPressRequest("GET", `plugins/${params.plugin}`);
+      const response = await makeWordPressRequest("GET", `plugins/${params.plugin}`, undefined, { siteId: params.site_id });
       return {
         toolResult: {
           content: [{ type: "text", text: JSON.stringify(response, null, 2) }]
@@ -106,7 +112,8 @@ export const pluginHandlers = {
   },
   activate_plugin: async (params: z.infer<typeof activatePluginSchema>) => {
     try {
-      const response = await makeWordPressRequest("POST", `plugins/${params.plugin}/activate`, params);
+      const { site_id, ...body } = params;
+      const response = await makeWordPressRequest("POST", `plugins/${params.plugin}/activate`, body, { siteId: site_id });
       return {
         toolResult: {
           content: [{ type: "text", text: JSON.stringify(response, null, 2) }]
@@ -124,7 +131,8 @@ export const pluginHandlers = {
   },
   deactivate_plugin: async (params: z.infer<typeof deactivatePluginSchema>) => {
     try {
-      const response = await makeWordPressRequest("POST", `plugins/${params.plugin}/deactivate`, params);
+      const { site_id, ...body } = params;
+      const response = await makeWordPressRequest("POST", `plugins/${params.plugin}/deactivate`, body, { siteId: site_id });
       return {
         toolResult: {
           content: [{ type: "text", text: JSON.stringify(response, null, 2) }]
@@ -142,7 +150,8 @@ export const pluginHandlers = {
   },
   create_plugin: async (params: z.infer<typeof createPluginSchema>) => {
     try {
-      const response = await makeWordPressRequest("POST", "plugins", params);
+      const { site_id, ...body } = params;
+      const response = await makeWordPressRequest("POST", "plugins", body, { siteId: site_id });
       return {
         toolResult: {
           content: [{ type: "text", text: JSON.stringify(response, null, 2) }]
