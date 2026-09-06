@@ -717,6 +717,18 @@ async function fetchContentById(
     );
   }
 
+  // The same stranding by another route: trimResponseFields runs on the way out
+  // of makeWordPressRequest, before withContentRawAlias reads content.raw. If
+  // `content` is stripped, the alias finds nothing and content_raw goes missing
+  // with isError false, whether or not a selection was requested.
+  if (includeRawContent && resolveStripFields(process.env.MCP_WP_STRIP_FIELDS).includes('content')) {
+    throw new Error(
+      `include_raw_content needs the raw body, but MCP_WP_STRIP_FIELDS removes ` +
+      `'content' from every response, so content_raw would be missing. ` +
+      `Narrow MCP_WP_STRIP_FIELDS to use include_raw_content.`
+    );
+  }
+
   const params: Record<string, any> = {};
   if (includeRawContent) params.context = 'edit';
   if (fieldsParam) params._fields = fieldsParam;

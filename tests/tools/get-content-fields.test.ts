@@ -18,14 +18,17 @@ vi.mock('../../src/wordpress.js', () => ({
 }));
 
 let getContent: (params: any) => Promise<any>;
+let logToFile: any;
 
 beforeAll(async () => {
   const mod = await import('../../src/tools/unified-content.js');
   getContent = (mod.unifiedContentHandlers as any).get_content;
+  logToFile = (await import('../../src/wordpress.js')).logToFile;
 });
 
 beforeEach(() => {
   requests.length = 0;
+  logToFile.mockClear?.();
 });
 
 function lastItemCall() {
@@ -135,5 +138,67 @@ describe('get_content field selection', () => {
     const call = lastItemCall();
     expect(call.params.context).toBe('edit');
     expect(call.params).not.toHaveProperty('_fields');
+  });
+
+  // The bug this catches: a guard matched with startsWith('content') rather
+  // than an exact comparison. `content_raw` is the name of the alias this tool
+  // adds to its own output, not a WordPress field — an easy thing for a caller
+  // to reach for, and it must not satisfy the guard.
+  it('rejects content_raw, which is this tool\'s output alias and not a WP field', async () => {
+    const result = await getContent({
+      content_type: 'post',
+      id: 5575,
+      include_raw_content: true,
+      fields: ['id', 'content_raw'],
+    });
+
+    expect(result.toolResult.isError).toBe(true);
+  });
+
+  // The bug this catches: comparing whole field paths against the stripped list
+  // instead of their root. `yoast_head.title` is removed just as surely as
+  // `yoast_head`, because trimResponseFields deletes the top-level key.
+  it('errors on a nested path whose root field is stripped', async () => {
+    const result = await getContent({
+      content_type: 'post',
+      id: 5575,
+      fields: ['yoast_head.title'],
+    });
+
+    expect(result.toolResult.isError).toBe(true);
+    expect(result.toolResult.content[0].text).toContain('MCP_WP_STRIP_FIELDS');
+  });
+
+  // The bug this catches: the shared helper hardcoding one tool's name in the
+  // partial-overlap warning, so a get_content caller is told list_content ate
+  // their field. The toolName argument exists for exactly this and nothing
+  // else asserts it.
+  it('names get_content in the partial-overlap warning', async () => {
+    await getContent({ content_type: 'post', id: 5575, fields: ['id', 'yoast_head'] });
+
+    const messages = logToFile.mock.calls.map((c: any[]) => String(c[0]));
+    expect(messages.some(m => m.startsWith('get_content:'))).toBe(true);
+  });
+
+  // The bug this catches: MCP_WP_STRIP_FIELDS naming `content` strands
+  // include_raw_content by a second route — trimResponseFields deletes the
+  // field on the way out, before withContentRawAlias reads it, so content_raw
+  // goes missing with isError false even with no selection at all.
+  it('errors when MCP_WP_STRIP_FIELDS removes content and raw content is wanted', async () => {
+    const previous = process.env.MCP_WP_STRIP_FIELDS;
+    process.env.MCP_WP_STRIP_FIELDS = 'content';
+    try {
+      const result = await getContent({
+        content_type: 'post',
+        id: 5575,
+        include_raw_content: true,
+      });
+
+      expect(result.toolResult.isError).toBe(true);
+      expect(result.toolResult.content[0].text).toContain('MCP_WP_STRIP_FIELDS');
+    } finally {
+      if (previous === undefined) delete process.env.MCP_WP_STRIP_FIELDS;
+      else process.env.MCP_WP_STRIP_FIELDS = previous;
+    }
   });
 });
