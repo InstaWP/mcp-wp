@@ -294,9 +294,11 @@ where the rendered body is nearly the whole payload:
 ```
 
 One restriction there: `include_raw_content` reads `content.raw` off the
-response, so a selection that leaves `content` out would return successfully
-with no `content_raw` and no explanation. Combining the two without selecting
-`content` is rejected rather than silently returning less than you asked for.
+response, so a selection that doesn't deliver the raw body would return
+successfully with no `content_raw` and no explanation. Combining the two is
+rejected unless the selection includes `content` or `content.raw` — note that
+`content.rendered` does **not** qualify, since it is a sibling subfield and
+carries no raw body.
 
 This maps to WordPress's own [`_fields`](https://developer.wordpress.org/rest-api/using-the-rest-api/global-parameters/#_fields)
 parameter, so nested paths work too (`title.rendered`), and a requested field an

@@ -86,6 +86,23 @@ describe('get_content field selection', () => {
     expect(result.toolResult.content[0].text).toContain('RAW BODY');
   });
 
+  // The bug this catches: a guard that accepts any field under `content.`.
+  // content.rendered is a sibling of content.raw and carries no raw body, so a
+  // selection naming it passed the check and still returned isError false with
+  // content_raw absent — the exact silent success the guard exists to prevent.
+  // Confirmed against a live site before this was tightened.
+  it('rejects content.rendered, which carries no raw body', async () => {
+    const result = await getContent({
+      content_type: 'post',
+      id: 5575,
+      include_raw_content: true,
+      fields: ['id', 'content.rendered'],
+    });
+
+    expect(result.toolResult.isError).toBe(true);
+    expect(result.toolResult.content[0].text).toContain('content.raw');
+  });
+
   it('accepts a nested content path for include_raw_content', async () => {
     const result = await getContent({
       content_type: 'post',

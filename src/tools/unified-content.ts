@@ -704,14 +704,16 @@ async function fetchContentById(
   const fieldsParam = buildFieldsParam(fields, 'get_content');
 
   // withContentRawAlias reads content.raw off the response. A selection that
-  // leaves `content` out makes that silently produce nothing, so the caller
-  // would get a successful response with no content_raw and no explanation.
+  // doesn't deliver content.raw makes that silently produce nothing, so the
+  // caller would get a successful response with no content_raw and no
+  // explanation. Only 'content' and 'content.raw' qualify — 'content.rendered'
+  // is a sibling subfield and yields no raw body, so it must not pass here.
   if (includeRawContent && fields?.length &&
-      !fields.some(f => f === 'content' || f.startsWith('content.'))) {
+      !fields.some(f => f === 'content' || f === 'content.raw')) {
     throw new Error(
-      `include_raw_content needs the 'content' field, but the requested selection ` +
-      `(${fields.join(', ')}) leaves it out — content_raw would be missing. ` +
-      `Add 'content' to fields, or drop include_raw_content.`
+      `include_raw_content needs the raw body, but the requested selection ` +
+      `(${fields.join(', ')}) does not include it — content_raw would be missing. ` +
+      `Add 'content' or 'content.raw' to fields, or drop include_raw_content.`
     );
   }
 
@@ -877,7 +879,8 @@ const getContentSchema = z.object({
     "dominates the payload on long posts. Ask for ['id','slug','meta'] to inspect " +
     "metadata without pulling the body. Nested paths such as 'title.rendered' are " +
     "supported. Note that a selection also drops the `_links` block unless named, " +
-    "and cannot be combined with include_raw_content unless 'content' is selected."
+    "and cannot be combined with include_raw_content unless 'content' or " +
+    "'content.raw' is selected — 'content.rendered' does not carry the raw body."
   )
 });
 
