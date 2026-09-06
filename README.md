@@ -277,7 +277,7 @@ Sites running [WP Recipe Maker](https://wordpress.org/plugins/wp-recipe-maker/) 
 
 ### Selecting fields
 
-`list_content` returns every field of every item by default, and for post types
+`list_content` and `get_content` return every field by default, and for post types
 that carry long bodies that is almost always more than the caller wants — a
 listing of four neighbourhood guides can run to 90KB of rendered HTML. Pass
 `fields` to ask WordPress for a subset:
@@ -285,6 +285,18 @@ listing of four neighbourhood guides can run to 90KB of rendered HTML. Pass
 ```json
 { "content_type": "post", "per_page": 20, "fields": ["id", "slug", "meta"] }
 ```
+
+`get_content` takes the same parameter, which matters most on a single long post
+where the rendered body is nearly the whole payload:
+
+```json
+{ "content_type": "post", "id": 5575, "fields": ["id", "slug", "meta"] }
+```
+
+One restriction there: `include_raw_content` reads `content.raw` off the
+response, so a selection that leaves `content` out would return successfully
+with no `content_raw` and no explanation. Combining the two without selecting
+`content` is rejected rather than silently returning less than you asked for.
 
 This maps to WordPress's own [`_fields`](https://developer.wordpress.org/rest-api/using-the-rest-api/global-parameters/#_fields)
 parameter, so nested paths work too (`title.rendered`), and a requested field an
@@ -305,6 +317,7 @@ Useful selections:
 | Inspect metadata (SEO keys, custom fields) | `["id", "slug", "meta"]` |
 | Build an index or a link list | `["id", "title", "link"]` |
 | Check publication state | `["id", "status", "modified"]` |
+| Read a body exactly, for editing | `["id", "content"]` with `include_raw_content` |
 
 Omit `fields` to get the full payload, which is the previous behaviour — minus
 whatever `MCP_WP_STRIP_FIELDS` removes (`yoast_head` and `yoast_head_json` by

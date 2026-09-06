@@ -698,12 +698,31 @@ async function fetchContentById(
   endpoint: string,
   id: number,
   siteId?: string,
-  includeRawContent: boolean = false
+  includeRawContent: boolean = false,
+  fields?: string[]
 ) {
+  const fieldsParam = buildFieldsParam(fields, 'get_content');
+
+  // withContentRawAlias reads content.raw off the response. A selection that
+  // leaves `content` out makes that silently produce nothing, so the caller
+  // would get a successful response with no content_raw and no explanation.
+  if (includeRawContent && fields?.length &&
+      !fields.some(f => f === 'content' || f.startsWith('content.'))) {
+    throw new Error(
+      `include_raw_content needs the 'content' field, but the requested selection ` +
+      `(${fields.join(', ')}) leaves it out — content_raw would be missing. ` +
+      `Add 'content' to fields, or drop include_raw_content.`
+    );
+  }
+
+  const params: Record<string, any> = {};
+  if (includeRawContent) params.context = 'edit';
+  if (fieldsParam) params._fields = fieldsParam;
+
   const response = await makeWordPressRequest(
     'GET',
     `${endpoint}/${id}`,
-    includeRawContent ? { context: 'edit' } : undefined,
+    Object.keys(params).length > 0 ? params : undefined,
     { siteId }
   );
 
@@ -779,6 +798,44 @@ async function buildContentUpdateData(
   return updateData;
 }
 
+/**
+ * Turn a `fields` selection into WordPress's `_fields` query value.
+ *
+ * Every response is run through trimResponseFields, which deletes the fields
+ * named by MCP_WP_STRIP_FIELDS *after* WordPress returns them. A selection made
+ * up entirely of those would come back as an empty object with isError false —
+ * indistinguishable from "the site has no such data", with nothing pointing at
+ * the cause. Fail loudly instead, and name the variable responsible.
+ *
+ * Returns undefined when no selection was requested, so the caller can leave
+ * `_fields` off the query entirely; WordPress ignores an empty `_fields` and
+ * returns the full payload, which would silently defeat the whole point.
+ */
+function buildFieldsParam(fields: string[] | undefined, toolName: string): string | undefined {
+  if (!fields?.length) return undefined;
+
+  const stripped = resolveStripFields(process.env.MCP_WP_STRIP_FIELDS);
+  const conflicting = fields.filter(f => stripped.includes(f.split('.')[0]));
+
+  if (conflicting.length === fields.length) {
+    throw new Error(
+      `Every requested field is removed from responses by MCP_WP_STRIP_FIELDS ` +
+      `(${conflicting.join(', ')}), so the result would be empty. ` +
+      `Unset or narrow MCP_WP_STRIP_FIELDS to read these fields.`
+    );
+  }
+
+  if (conflicting.length > 0) {
+    logToFile(
+      `${toolName}: requested field(s) ${conflicting.join(', ')} are removed by ` +
+      `MCP_WP_STRIP_FIELDS and will be absent from the result.`,
+      'info'
+    );
+  }
+
+  return fields.join(',');
+}
+
 // Schema definitions
 const listContentSchema = z.object({
   content_type: z.string().describe("The content type slug (e.g., 'post', 'page', 'product', 'documentation')"),
@@ -813,6 +870,14 @@ const getContentSchema = z.object({
   site_id: z.string().optional().describe("Site ID (for multi-site setups)"),
   include_raw_content: z.boolean().optional().default(false).describe(
     "Fetch the content with WordPress edit context and include a top-level content_raw field for exact matching"
+  ),
+  fields: z.array(z.string().trim().min(1)).nonempty().optional().describe(
+    "Limit the response to these top-level fields (WordPress `_fields`). A post " +
+    "returns every field by default, including fully rendered `content`, which " +
+    "dominates the payload on long posts. Ask for ['id','slug','meta'] to inspect " +
+    "metadata without pulling the body. Nested paths such as 'title.rendered' are " +
+    "supported. Note that a selection also drops the `_links` block unless named, " +
+    "and cannot be combined with include_raw_content unless 'content' is selected."
   )
 });
 
@@ -978,7 +1043,7 @@ export const unifiedContentTools: Tool[] = [
   },
   {
     name: "get_content",
-    description: "Gets specific content by ID and content type",
+    description: "Gets specific content by ID and content type. Returns every field by default (minus anything MCP_WP_STRIP_FIELDS removes), including fully rendered content — pass `fields` to select only what you need (e.g. ['id','slug','meta']).",
     inputSchema: { type: "object", properties: getContentSchema.shape }
   },
   {
@@ -1030,28 +1095,9 @@ export const unifiedContentHandlers = {
       // recognise — so passing `fields` straight through would silently return
       // the full payload instead of erroring. Map it explicitly.
       const requestParams: Record<string, any> = { ...queryParams };
-      if (fields?.length) {
-        // Every response is run through trimResponseFields, so a field named
-        // there is deleted after WordPress returns it. Asking for one would
-        // otherwise come back as an empty object per item with isError false —
-        // indistinguishable from "the site has no such data".
-        const stripped = resolveStripFields(process.env.MCP_WP_STRIP_FIELDS);
-        const conflicting = fields.filter(f => stripped.includes(f.split('.')[0]));
-        if (conflicting.length === fields.length) {
-          throw new Error(
-            `Every requested field is removed from responses by MCP_WP_STRIP_FIELDS ` +
-            `(${conflicting.join(', ')}), so the result would be empty. ` +
-            `Unset or narrow MCP_WP_STRIP_FIELDS to read these fields.`
-          );
-        }
-        if (conflicting.length > 0) {
-          logToFile(
-            `list_content: requested field(s) ${conflicting.join(', ')} are removed by ` +
-            `MCP_WP_STRIP_FIELDS and will be absent from the result.`,
-            'info'
-          );
-        }
-        requestParams._fields = fields.join(',');
+      const fieldsParam = buildFieldsParam(fields, 'list_content');
+      if (fieldsParam) {
+        requestParams._fields = fieldsParam;
       }
 
       const response = await makeWordPressRequest('GET', endpoint, requestParams, { siteId: site_id });
@@ -1089,7 +1135,8 @@ export const unifiedContentHandlers = {
         endpoint,
         params.id,
         params.site_id,
-        params.include_raw_content || false
+        params.include_raw_content || false,
+        params.fields
       );
 
       return {
