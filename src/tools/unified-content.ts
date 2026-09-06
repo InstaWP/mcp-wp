@@ -1,6 +1,6 @@
 // src/tools/unified-content.ts
 import { Tool } from '@modelcontextprotocol/sdk/types.js';
-import { makeWordPressRequest, logToFile } from '../wordpress.js';
+import { makeWordPressRequest, logToFile, resolveStripFields } from '../wordpress.js';
 import { siteManager } from '../config/site-manager.js';
 import { z } from 'zod';
 import * as fs from 'fs-extra';
@@ -795,7 +795,16 @@ const listContentSchema = z.object({
   orderby: z.string().optional().describe("Sort content by parameter"),
   order: z.enum(['asc', 'desc']).optional().describe("Order sort attribute"),
   after: z.string().optional().describe("ISO8601 date string to get content published after this date"),
-  before: z.string().optional().describe("ISO8601 date string to get content published before this date")
+  before: z.string().optional().describe("ISO8601 date string to get content published before this date"),
+  fields: z.array(z.string().trim().min(1)).nonempty().optional().describe(
+    "Limit each item to these top-level fields (WordPress `_fields`). A listing " +
+    "returns every field by default, including fully rendered `content`, which is " +
+    "usually far larger than what the caller needs. Ask for ['id','slug','meta'] to " +
+    "inspect metadata, or ['id','title','link'] to build an index. Nested paths such " +
+    "as 'title.rendered' are supported by WordPress. Requested fields the item does " +
+    "not have are simply absent from the response. Note that a selection also drops " +
+    "the `_links` block unless you name it."
+  )
 });
 
 const getContentSchema = z.object({
@@ -964,7 +973,7 @@ type GetContentBySlugParams = z.infer<typeof getContentBySlugSchema>;
 export const unifiedContentTools: Tool[] = [
   {
     name: "list_content",
-    description: "Lists content of any type (posts, pages, or custom post types) with filtering and pagination",
+    description: "Lists content of any type (posts, pages, or custom post types) with filtering and pagination. Returns every field of every item by default (minus anything MCP_WP_STRIP_FIELDS removes), including fully rendered content — pass `fields` to select only what you need (e.g. ['id','slug','meta']), which is dramatically cheaper on large posts.",
     inputSchema: { type: "object", properties: listContentSchema.shape }
   },
   {
@@ -1015,9 +1024,37 @@ export const unifiedContentHandlers = {
   list_content: async (params: ListContentParams) => {
     try {
       const endpoint = await getContentEndpoint(params.content_type, params.site_id);
-      const { content_type, site_id, ...queryParams } = params;
+      const { content_type, site_id, fields, ...queryParams } = params;
 
-      const response = await makeWordPressRequest('GET', endpoint, queryParams, { siteId: site_id });
+      // WordPress spells this `_fields`, and ignores anything it doesn't
+      // recognise — so passing `fields` straight through would silently return
+      // the full payload instead of erroring. Map it explicitly.
+      const requestParams: Record<string, any> = { ...queryParams };
+      if (fields?.length) {
+        // Every response is run through trimResponseFields, so a field named
+        // there is deleted after WordPress returns it. Asking for one would
+        // otherwise come back as an empty object per item with isError false —
+        // indistinguishable from "the site has no such data".
+        const stripped = resolveStripFields(process.env.MCP_WP_STRIP_FIELDS);
+        const conflicting = fields.filter(f => stripped.includes(f.split('.')[0]));
+        if (conflicting.length === fields.length) {
+          throw new Error(
+            `Every requested field is removed from responses by MCP_WP_STRIP_FIELDS ` +
+            `(${conflicting.join(', ')}), so the result would be empty. ` +
+            `Unset or narrow MCP_WP_STRIP_FIELDS to read these fields.`
+          );
+        }
+        if (conflicting.length > 0) {
+          logToFile(
+            `list_content: requested field(s) ${conflicting.join(', ')} are removed by ` +
+            `MCP_WP_STRIP_FIELDS and will be absent from the result.`,
+            'info'
+          );
+        }
+        requestParams._fields = fields.join(',');
+      }
+
+      const response = await makeWordPressRequest('GET', endpoint, requestParams, { siteId: site_id });
 
       return {
         toolResult: {
