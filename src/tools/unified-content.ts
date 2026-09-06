@@ -1,6 +1,7 @@
 // src/tools/unified-content.ts
 import { Tool } from '@modelcontextprotocol/sdk/types.js';
-import { makeWordPressRequest, logToFile } from '../wordpress.js';
+import { makeWordPressRequest, logToFile, resolveStripFields } from '../wordpress.js';
+import { siteManager } from '../config/site-manager.js';
 import { z } from 'zod';
 import * as fs from 'fs-extra';
 import * as path from 'path';
@@ -16,10 +17,39 @@ const CACHE_DIR = process.env.UNIFIED_CONTENT_CACHE_DIR
 // Ensure the cache directory exists at module load time (best-effort)
 fs.ensureDir(CACHE_DIR).catch(() => {});
 
-// Cache for post types to reduce API calls
-let postTypesCache: any = null;
-let cacheTimestamp: number = 0;
+// Cache for post types, keyed per site, to reduce API calls.
+// Mirrors the per-site pattern in unified-taxonomies.ts: an unkeyed singleton
+// here let one site's post types shadow another's (the memory cache was checked
+// before the correctly-keyed disk cache), so endpoint resolution for custom
+// post types could use the wrong site's rest_base until a forced refresh.
+interface PostTypesCacheEntry {
+  data: any;
+  timestamp: number;
+}
+const postTypesCache = new Map<string, PostTypesCacheEntry>();
 const CACHE_DURATION = parseInt(process.env.WORDPRESS_CACHE_DURATION || '3600000'); // Default 1 hour, configurable
+
+/**
+ * Resolve an optional siteId to the concrete id the cache layers key on.
+ *
+ * Callers reach the default site two ways — omitting site_id, or passing its
+ * actual id — and both must land in the same cache slot, or a forced refresh
+ * through one shape leaves the other stale (and, when a *non-default* site is
+ * explicitly named "default", the two sites would share a disk file).
+ * Exported for unified-taxonomies.ts, whose per-site cache has the same
+ * two-shapes property.
+ */
+export function resolveCacheSiteId(siteId?: string): string {
+  if (siteId) {
+    return siteId;
+  }
+  try {
+    return siteManager.getDefaultSiteId() || '__default__';
+  } catch {
+    // Nothing configured yet (e.g. unit tests); still cache coherently.
+    return '__default__';
+  }
+}
 
 // Helper function to load cache from disk
 async function loadCacheFromDisk(siteId?: string): Promise<{ data: any; timestamp: number } | null> {
@@ -57,20 +87,21 @@ async function saveCacheToDisk(data: any, siteId?: string): Promise<void> {
 // Helper function to get all post types with caching
 async function getPostTypes(forceRefresh = false, siteId?: string) {
   const now = Date.now();
+  const cacheKey = resolveCacheSiteId(siteId);
 
   // Try memory cache first
-  if (!forceRefresh && postTypesCache && (now - cacheTimestamp) < CACHE_DURATION) {
+  const cached = postTypesCache.get(cacheKey);
+  if (!forceRefresh && cached && (now - cached.timestamp) < CACHE_DURATION) {
     logToFile('Using memory-cached post types', 'debug');
-    return postTypesCache;
+    return cached.data;
   }
 
   // Try disk cache if memory cache is stale
   if (!forceRefresh) {
-    const diskCache = await loadCacheFromDisk(siteId);
+    const diskCache = await loadCacheFromDisk(cacheKey);
     if (diskCache && (now - diskCache.timestamp) < CACHE_DURATION) {
       logToFile('Using disk-cached post types', 'debug');
-      postTypesCache = diskCache.data;
-      cacheTimestamp = diskCache.timestamp;
+      postTypesCache.set(cacheKey, { data: diskCache.data, timestamp: diskCache.timestamp });
       return diskCache.data;
     }
   }
@@ -79,11 +110,10 @@ async function getPostTypes(forceRefresh = false, siteId?: string) {
   try {
     logToFile('Fetching post types from API', 'info');
     const response = await makeWordPressRequest('GET', 'types', undefined, { siteId });
-    postTypesCache = response;
-    cacheTimestamp = now;
+    postTypesCache.set(cacheKey, { data: response, timestamp: now });
 
     // Save to disk for persistence
-    await saveCacheToDisk(response, siteId);
+    await saveCacheToDisk(response, cacheKey);
 
     return response;
   } catch (error: any) {
@@ -373,22 +403,19 @@ function convertHtmlToBlocks(html: string): string {
         blocks.push(`<!-- wp:paragraph -->\n${element}\n<!-- /wp:paragraph -->`);
         break;
       case 'h1':
-        blocks.push(`<!-- wp:heading {"level":1} -->\n${element}\n<!-- /wp:heading -->`);
-        break;
       case 'h2':
-        blocks.push(`<!-- wp:heading -->\n${element}\n<!-- /wp:heading -->`);
-        break;
       case 'h3':
-        blocks.push(`<!-- wp:heading {"level":3} -->\n${element}\n<!-- /wp:heading -->`);
-        break;
       case 'h4':
-        blocks.push(`<!-- wp:heading {"level":4} -->\n${element}\n<!-- /wp:heading -->`);
-        break;
       case 'h5':
-        blocks.push(`<!-- wp:heading {"level":5} -->\n${element}\n<!-- /wp:heading -->`);
-        break;
       case 'h6':
-        blocks.push(`<!-- wp:heading {"level":6} -->\n${element}\n<!-- /wp:heading -->`);
+        // Always emit the level explicitly. h2 used to be the lone bare case
+        // (Gutenberg's serializer omits the default level), which made
+        // conversion output inconsistent across heading levels and read as
+        // "the {"level":2} attribute got stripped" when existing content was
+        // round-tripped through this converter. An explicit default attribute
+        // is valid for the block parser, and a single deterministic form is
+        // worth more here than canonical minimalism.
+        blocks.push(`<!-- wp:heading {"level":${tagName.charAt(1)}} -->\n${element}\n<!-- /wp:heading -->`);
         break;
       case 'ul':
         blocks.push(`<!-- wp:list -->\n${element}\n<!-- /wp:list -->`);
@@ -518,6 +545,61 @@ export function buildDroppedMetaWarning(droppedKeys: string[]): string {
   );
 }
 
+// One entry per term field whose write could not be confirmed from the
+// response WordPress sent back.
+export interface DroppedTermField {
+  field: 'categories' | 'tags';
+  requested: number[];
+  saved: number[] | null; // null: the response carries no such field at all
+  missing: number[];
+}
+
+// Compare the term IDs a write requested against the IDs the response reports
+// as saved. wp_set_object_terms() silently skips IDs that do not exist, and
+// /wp/v2 returns 200 with the survivors — so a partial term write is invisible
+// unless the response is checked. Detection mirrors the response-derived
+// check in assign_terms_to_content, but the SEVERITY deliberately diverges
+// from it: that tool writes nothing but terms, so a dropped term is a failed
+// call (isError). create/update also wrote title/content/etc., which DID
+// land, so this follows the dropped-meta-keys warning precedent above
+// instead — a loud warning on a successful result.
+export function detectDroppedTerms(
+  requested: { categories?: number | number[]; tags?: number | number[] } | undefined,
+  response: any
+): DroppedTermField[] {
+  const dropped: DroppedTermField[] = [];
+  for (const field of ['categories', 'tags'] as const) {
+    const value = requested?.[field];
+    if (value === undefined) {
+      continue;
+    }
+    // Normalized defensively; the tool schemas only pass arrays here.
+    const ids = Array.isArray(value) ? value : [value];
+    const echoed = response?.[field];
+    const saved = Array.isArray(echoed) ? (echoed as number[]) : null;
+    const missing = saved === null ? [...ids] : ids.filter((id) => !saved.includes(id));
+    if (missing.length > 0) {
+      dropped.push({ field, requested: [...ids], saved, missing });
+    }
+  }
+  return dropped;
+}
+
+export function buildDroppedTermsWarning(dropped: DroppedTermField[]): string {
+  return dropped
+    .map(({ field, requested, saved, missing }) =>
+      saved === null
+        ? `Warning: the response reports no "${field}" field, so none of the requested ` +
+          `${field} [${requested.join(', ')}] can be confirmed as saved. The taxonomy may not be ` +
+          `registered for this content type, or not exposed in REST — assign_terms_to_content ` +
+          `resolves custom taxonomies by rest_base if that is the case.`
+        : `Warning: WordPress saved ${field} [${saved.join(', ')}] but silently dropped ` +
+          `[${missing.join(', ')}] — term IDs it does not know. The rest of the write was applied. ` +
+          `Verify the IDs (list_terms) or create the terms first, then retry.`
+    )
+    .join('\n');
+}
+
 function validateContentEdit(edit: ContentEditParams) {
   const targetedOperations = new Set<ContentEditOperation>(['insert_before', 'insert_after', 'replace']);
 
@@ -616,12 +698,45 @@ async function fetchContentById(
   endpoint: string,
   id: number,
   siteId?: string,
-  includeRawContent: boolean = false
+  includeRawContent: boolean = false,
+  fields?: string[]
 ) {
+  const fieldsParam = buildFieldsParam(fields, 'get_content');
+
+  // withContentRawAlias reads content.raw off the response. A selection that
+  // doesn't deliver content.raw makes that silently produce nothing, so the
+  // caller would get a successful response with no content_raw and no
+  // explanation. Only 'content' and 'content.raw' qualify — 'content.rendered'
+  // is a sibling subfield and yields no raw body, so it must not pass here.
+  if (includeRawContent && fields?.length &&
+      !fields.some(f => f === 'content' || f === 'content.raw')) {
+    throw new Error(
+      `include_raw_content needs the raw body, but the requested selection ` +
+      `(${fields.join(', ')}) does not include it — content_raw would be missing. ` +
+      `Add 'content' or 'content.raw' to fields, or drop include_raw_content.`
+    );
+  }
+
+  // The same stranding by another route: trimResponseFields runs on the way out
+  // of makeWordPressRequest, before withContentRawAlias reads content.raw. If
+  // `content` is stripped, the alias finds nothing and content_raw goes missing
+  // with isError false, whether or not a selection was requested.
+  if (includeRawContent && resolveStripFields(process.env.MCP_WP_STRIP_FIELDS).includes('content')) {
+    throw new Error(
+      `include_raw_content needs the raw body, but MCP_WP_STRIP_FIELDS removes ` +
+      `'content' from every response, so content_raw would be missing. ` +
+      `Narrow MCP_WP_STRIP_FIELDS to use include_raw_content.`
+    );
+  }
+
+  const params: Record<string, any> = {};
+  if (includeRawContent) params.context = 'edit';
+  if (fieldsParam) params._fields = fieldsParam;
+
   const response = await makeWordPressRequest(
     'GET',
     `${endpoint}/${id}`,
-    includeRawContent ? { context: 'edit' } : undefined,
+    Object.keys(params).length > 0 ? params : undefined,
     { siteId }
   );
 
@@ -697,6 +812,44 @@ async function buildContentUpdateData(
   return updateData;
 }
 
+/**
+ * Turn a `fields` selection into WordPress's `_fields` query value.
+ *
+ * Every response is run through trimResponseFields, which deletes the fields
+ * named by MCP_WP_STRIP_FIELDS *after* WordPress returns them. A selection made
+ * up entirely of those would come back as an empty object with isError false —
+ * indistinguishable from "the site has no such data", with nothing pointing at
+ * the cause. Fail loudly instead, and name the variable responsible.
+ *
+ * Returns undefined when no selection was requested, so the caller can leave
+ * `_fields` off the query entirely; WordPress ignores an empty `_fields` and
+ * returns the full payload, which would silently defeat the whole point.
+ */
+function buildFieldsParam(fields: string[] | undefined, toolName: string): string | undefined {
+  if (!fields?.length) return undefined;
+
+  const stripped = resolveStripFields(process.env.MCP_WP_STRIP_FIELDS);
+  const conflicting = fields.filter(f => stripped.includes(f.split('.')[0]));
+
+  if (conflicting.length === fields.length) {
+    throw new Error(
+      `Every requested field is removed from responses by MCP_WP_STRIP_FIELDS ` +
+      `(${conflicting.join(', ')}), so the result would be empty. ` +
+      `Unset or narrow MCP_WP_STRIP_FIELDS to read these fields.`
+    );
+  }
+
+  if (conflicting.length > 0) {
+    logToFile(
+      `${toolName}: requested field(s) ${conflicting.join(', ')} are removed by ` +
+      `MCP_WP_STRIP_FIELDS and will be absent from the result.`,
+      'info'
+    );
+  }
+
+  return fields.join(',');
+}
+
 // Schema definitions
 const listContentSchema = z.object({
   content_type: z.string().describe("The content type slug (e.g., 'post', 'page', 'product', 'documentation')"),
@@ -713,7 +866,16 @@ const listContentSchema = z.object({
   orderby: z.string().optional().describe("Sort content by parameter"),
   order: z.enum(['asc', 'desc']).optional().describe("Order sort attribute"),
   after: z.string().optional().describe("ISO8601 date string to get content published after this date"),
-  before: z.string().optional().describe("ISO8601 date string to get content published before this date")
+  before: z.string().optional().describe("ISO8601 date string to get content published before this date"),
+  fields: z.array(z.string().trim().min(1)).nonempty().optional().describe(
+    "Limit each item to these top-level fields (WordPress `_fields`). A listing " +
+    "returns every field by default, including fully rendered `content`, which is " +
+    "usually far larger than what the caller needs. Ask for ['id','slug','meta'] to " +
+    "inspect metadata, or ['id','title','link'] to build an index. Nested paths such " +
+    "as 'title.rendered' are supported by WordPress. Requested fields the item does " +
+    "not have are simply absent from the response. Note that a selection also drops " +
+    "the `_links` block unless you name it."
+  )
 });
 
 const getContentSchema = z.object({
@@ -722,6 +884,15 @@ const getContentSchema = z.object({
   site_id: z.string().optional().describe("Site ID (for multi-site setups)"),
   include_raw_content: z.boolean().optional().default(false).describe(
     "Fetch the content with WordPress edit context and include a top-level content_raw field for exact matching"
+  ),
+  fields: z.array(z.string().trim().min(1)).nonempty().optional().describe(
+    "Limit the response to these top-level fields (WordPress `_fields`). A post " +
+    "returns every field by default, including fully rendered `content`, which " +
+    "dominates the payload on long posts. Ask for ['id','slug','meta'] to inspect " +
+    "metadata without pulling the body. Nested paths such as 'title.rendered' are " +
+    "supported. Note that a selection also drops the `_links` block unless named, " +
+    "and cannot be combined with include_raw_content unless 'content' or " +
+    "'content.raw' is selected — 'content.rendered' does not carry the raw body."
   )
 });
 
@@ -882,12 +1053,12 @@ type GetContentBySlugParams = z.infer<typeof getContentBySlugSchema>;
 export const unifiedContentTools: Tool[] = [
   {
     name: "list_content",
-    description: "Lists content of any type (posts, pages, or custom post types) with filtering and pagination",
+    description: "Lists content of any type (posts, pages, or custom post types) with filtering and pagination. Returns every field of every item by default (minus anything MCP_WP_STRIP_FIELDS removes), including fully rendered content — pass `fields` to select only what you need (e.g. ['id','slug','meta']), which is dramatically cheaper on large posts.",
     inputSchema: { type: "object", properties: listContentSchema.shape }
   },
   {
     name: "get_content",
-    description: "Gets specific content by ID and content type",
+    description: "Gets specific content by ID and content type. Returns every field by default (minus anything MCP_WP_STRIP_FIELDS removes), including fully rendered content — pass `fields` to select only what you need (e.g. ['id','slug','meta']).",
     inputSchema: { type: "object", properties: getContentSchema.shape }
   },
   {
@@ -933,9 +1104,18 @@ export const unifiedContentHandlers = {
   list_content: async (params: ListContentParams) => {
     try {
       const endpoint = await getContentEndpoint(params.content_type, params.site_id);
-      const { content_type, site_id, ...queryParams } = params;
+      const { content_type, site_id, fields, ...queryParams } = params;
 
-      const response = await makeWordPressRequest('GET', endpoint, queryParams, { siteId: site_id });
+      // WordPress spells this `_fields`, and ignores anything it doesn't
+      // recognise — so passing `fields` straight through would silently return
+      // the full payload instead of erroring. Map it explicitly.
+      const requestParams: Record<string, any> = { ...queryParams };
+      const fieldsParam = buildFieldsParam(fields, 'list_content');
+      if (fieldsParam) {
+        requestParams._fields = fieldsParam;
+      }
+
+      const response = await makeWordPressRequest('GET', endpoint, requestParams, { siteId: site_id });
 
       return {
         toolResult: {
@@ -970,7 +1150,8 @@ export const unifiedContentHandlers = {
         endpoint,
         params.id,
         params.site_id,
-        params.include_raw_content || false
+        params.include_raw_content || false,
+        params.fields
       );
 
       return {
@@ -1051,6 +1232,12 @@ export const unifiedContentHandlers = {
       if (droppedMeta.length > 0) {
         responseContent.unshift({ type: 'text', text: buildDroppedMetaWarning(droppedMeta) });
       }
+      // Check the assembled payload, not params: custom_fields can carry
+      // categories/tags into the request too.
+      const droppedTerms = detectDroppedTerms(contentData, response);
+      if (droppedTerms.length > 0) {
+        responseContent.unshift({ type: 'text', text: buildDroppedTermsWarning(droppedTerms) });
+      }
 
       return {
         toolResult: {
@@ -1088,6 +1275,12 @@ export const unifiedContentHandlers = {
       const droppedMeta = detectDroppedMetaKeys(params.meta, response);
       if (droppedMeta.length > 0) {
         responseContent.unshift({ type: 'text', text: buildDroppedMetaWarning(droppedMeta) });
+      }
+      // Check the assembled payload, not params: custom_fields can carry
+      // categories/tags into the request too.
+      const droppedTerms = detectDroppedTerms(updateData, response);
+      if (droppedTerms.length > 0) {
+        responseContent.unshift({ type: 'text', text: buildDroppedTermsWarning(droppedTerms) });
       }
 
       return {

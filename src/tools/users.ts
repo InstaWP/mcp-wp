@@ -6,6 +6,7 @@ import { z } from 'zod';
 import { zodToJsonSchema } from 'zod-to-json-schema';
 
 const listUsersSchema = z.object({
+  site_id: z.string().optional().describe("Site ID (for multi-site setups)"),
   page: z.number().optional().describe("Page number (default 1)"),
   per_page: z.number().min(1).max(100).optional().describe("Items per page (default 10, max 100)"),
   search: z.string().optional().describe("Search term for user content or name"),
@@ -16,11 +17,13 @@ const listUsersSchema = z.object({
 });
 
 const getUserSchema = z.object({
+  site_id: z.string().optional().describe("Site ID (for multi-site setups)"),
   id: z.coerce.number().describe("User ID"),
   context: z.enum(['view', 'embed', 'edit']).optional().describe("Scope under which the request is made")
 }).strict();
 
 const createUserSchema = z.object({
+  site_id: z.string().optional().describe("Site ID (for multi-site setups)"),
   username: z.string().describe("User login name"),
   name: z.string().optional().describe("Display name for the user"),
   first_name: z.string().optional().describe("First name for the user"),
@@ -36,6 +39,7 @@ const createUserSchema = z.object({
 }).strict();
 
 const updateUserSchema = z.object({
+  site_id: z.string().optional().describe("Site ID (for multi-site setups)"),
   id: z.coerce.number().describe("User ID"),
   username: z.string().optional().describe("User login name"),
   name: z.string().optional().describe("Display name for the user"),
@@ -52,6 +56,7 @@ const updateUserSchema = z.object({
 }).strict();
 
 const deleteUserSchema = z.object({
+  site_id: z.string().optional().describe("Site ID (for multi-site setups)"),
   id: z.coerce.number().describe("User ID"),
   force: z.boolean().optional().describe("Whether to bypass trash and force deletion"),
   reassign: z.coerce.number().optional().describe("User ID to reassign posts to")
@@ -94,7 +99,8 @@ export const userTools: Tool[] = [
 export const userHandlers = {
   list_users: async (params: ListUsersParams) => {
     try {
-      const response = await makeWordPressRequest('GET', "users", params);
+      const { site_id, ...query } = params;
+      const response = await makeWordPressRequest('GET', "users", query, { siteId: site_id });
       const users: WPUser[] = response;
       return {
         toolResult: {
@@ -113,7 +119,7 @@ export const userHandlers = {
   },
   get_user: async (params: GetUserParams) => {
     try {
-      const response = await makeWordPressRequest('GET', `users/${params.id}`, { context: params.context });
+      const response = await makeWordPressRequest('GET', `users/${params.id}`, { context: params.context }, { siteId: params.site_id });
       const user: WPUser = response;
       return {
         toolResult: {
@@ -132,7 +138,8 @@ export const userHandlers = {
   },
   create_user: async (params: CreateUserParams) => {
     try {
-      const response = await makeWordPressRequest('POST', "users", params);
+      const { site_id, ...body } = params;
+      const response = await makeWordPressRequest('POST', "users", body, { siteId: site_id });
       const user: WPUser = response;
       return {
         toolResult: {
@@ -151,8 +158,8 @@ export const userHandlers = {
   },
   update_user: async (params: UpdateUserParams) => {
     try {
-      const { id, ...updateData } = params;
-      const response = await makeWordPressRequest('POST', `users/${id}`, updateData);
+      const { id, site_id, ...updateData } = params;
+      const response = await makeWordPressRequest('POST', `users/${id}`, updateData, { siteId: site_id });
       const user: WPUser = response;
       return {
         toolResult: {
@@ -174,7 +181,7 @@ export const userHandlers = {
       const response = await makeWordPressRequest('DELETE', `users/${params.id}`, { 
         force: params.force,
         reassign: params.reassign
-      });
+      }, { siteId: params.site_id });
       const user: WPUser = response;
       return {
         toolResult: {
