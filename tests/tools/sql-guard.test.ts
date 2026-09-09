@@ -164,6 +164,21 @@ describe('execute_sql_query rejects queries it cannot read unambiguously', () =>
     expect(requestsReceived).toBe(0);
   });
 
+  it('rejects a quoted function name separated by a control-character comment', async () => {
+    // The server starts a `--` comment on whitespace OR a control character
+    // (my_isspace || my_iscntrl), which is wider than any whitespace class. A
+    // scanner that stops at whitespace leaves `--<ctrl>\n` in place between the
+    // quoted name and its `(`, so the adjacency test does not fire and the
+    // identifier has already been blanked. Verified on MySQL 8.0.46 and MariaDB
+    // 11.8.8: `SELECT \`VERSION\`--<0x01>\n()` runs the builtin.
+    for (const code of [0x01, 0x07, 0x1f, 0x7f]) {
+      const payload = `SELECT \`LOAD_FILE\`--${String.fromCharCode(code)}\n('/etc/passwd')`;
+      const { isError } = await run(payload);
+      expect(isError, `separator 0x${code.toString(16)}`).toBe(true);
+    }
+    expect(requestsReceived).toBe(0);
+  });
+
   it('rejects a query containing a NUL byte', async () => {
     // Indistinguishable from the marker normalizeQuery uses internally.
     const { isError } = await run('SELECT 1 \u0000');
@@ -237,11 +252,25 @@ describe('execute_sql_query still allows real read-only queries', () => {
   });
 
   it('allows the read-only builtins that share a name with a DDL keyword', async () => {
-    // INSERT() is a string function and TRUNCATE() a numeric one. Word-boundary
-    // matching would refuse both, and neither statement form can reach this far
-    // anyway — the prefix check has already required SELECT/WITH/EXPLAIN.
+    // INSERT() is a string function, TRUNCATE() a numeric one and REPLACE() a
+    // string one. Word-boundary matching would refuse all three, and no statement
+    // form can reach this far anyway — the prefix check has already required
+    // SELECT/WITH/EXPLAIN.
     expect((await run("SELECT INSERT('Quadratic', 3, 4, 'What')")).isError).toBe(false);
     expect((await run('SELECT TRUNCATE(1.234, 2) FROM wp_posts LIMIT 1')).isError).toBe(false);
+    expect((await run("SELECT REPLACE(post_title, 'a', 'b') FROM wp_posts LIMIT 1")).isError).toBe(false);
+  });
+
+  it('still blocks the statement forms of those keywords', async () => {
+    // REPLACE ... SET needs no INTO, so nothing else on the list would catch it.
+    expect((await run('SELECT 1 UNION REPLACE wp_posts SET ID = 1')).isError).toBe(true);
+    expect((await run('SELECT 1 UNION INSERT wp_posts SET ID = 1')).isError).toBe(true);
+    expect(requestsReceived).toBe(0);
+  });
+
+  it('leaves arithmetic alone: `--` is only a comment when a space follows', async () => {
+    const { isError } = await run('SELECT 1--2 AS a');
+    expect(isError).toBe(false);
   });
 
   it('blocks a DDL keyword at the very end of the query', async () => {

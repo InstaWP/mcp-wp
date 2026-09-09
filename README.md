@@ -604,11 +604,13 @@ function mcp_wp_normalize_sql($query) {
             continue;
         }
 
-        // MySQL only starts a `--` comment when ASCII whitespace (or end of
-        // input) follows; `a--b` is arithmetic. Anything wider would blank text
-        // the server goes on to execute.
+        // The server starts a `--` comment on whitespace OR a control character
+        // (`my_isspace || my_iscntrl`), i.e. every byte through 0x20 plus DEL;
+        // `a--b` is arithmetic. This set has to equal the server's exactly —
+        // wider blanks text the server executes, narrower keeps text the server
+        // drops and so pushes apart the tokens the check below compares.
         if ($ch === '-' && $i + 1 < $len && $query[$i + 1] === '-'
-            && ($i + 2 >= $len || preg_match('/[ \t\n\r\f\x0B]/', $query[$i + 2]))) {
+            && ($i + 2 >= $len || preg_match('/[\x00-\x20\x7F]/', $query[$i + 2]))) {
             $nl = strpos($query, "\n", $i);
             $i = $nl === false ? $len : $nl;
             $out .= ' ';
@@ -688,9 +690,9 @@ add_action('rest_api_init', function() {
                 return new WP_Error('invalid_query', 'Only read-only queries are allowed', array('status' => 400));
             }
 
-            // INSERT() and TRUNCATE() are also ordinary read-only functions, so
-            // these two only count when no `(` follows.
-            if (preg_match('/\b(INSERT|TRUNCATE)\b(?!\s*\()/i', $normalized)) {
+            // INSERT(), TRUNCATE() and REPLACE() are also ordinary read-only
+            // functions, so these three only count when no `(` follows.
+            if (preg_match('/\b(INSERT|TRUNCATE|REPLACE)\b(?!\s*\()/i', $normalized)) {
                 return new WP_Error('invalid_query', 'Only read-only queries are allowed', array('status' => 400));
             }
 

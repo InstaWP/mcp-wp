@@ -152,4 +152,32 @@ describe('debug logging never emits the application password', () => {
     expect(logged).not.toContain(NEW_USER_PASSWORD);
     expect(logged).not.toContain('sk-live-should-not-appear');
   });
+
+  it('redacts credential keys under the names WordPress and plugins actually use', async () => {
+    // `user_pass` is WordPress's own column name, and update_content forwards
+    // arbitrary meta/custom_fields into the logged body, where a plugin's
+    // `smtp_password` is an ordinary key. An exact-match key list misses both.
+    await makeWordPressRequest('POST', 'posts', {
+      title: 'a post',
+      user_pass: 'LEAK-user-pass',
+      meta: { smtp_password: 'LEAK-smtp', wp_mail_smtp_api_key: 'LEAK-apikey' },
+      authors: [{ name: 'someone', accessToken: 'LEAK-token' }]
+    });
+
+    const logged = stderr.join('');
+    expect(logged).toContain('a post');
+    for (const secret of ['LEAK-user-pass', 'LEAK-smtp', 'LEAK-apikey', 'LEAK-token']) {
+      expect(logged, secret).not.toContain(secret);
+    }
+  });
+
+  it('does not leak a credential past the recursion cap, and leaves non-plain values readable', async () => {
+    const deep: any = { a: { b: { c: { d: { e: { f: { g: { password: 'DEEP-LEAK' } } } } } } } };
+    await makeWordPressRequest('POST', 'posts', { ...deep, when: new Date('2026-01-02T03:04:05Z') });
+
+    const logged = stderr.join('');
+    expect(logged).not.toContain('DEEP-LEAK');
+    // A Date must not be flattened to `{}` by the walk.
+    expect(logged).toContain('2026-01-02T03:04:05');
+  });
 });

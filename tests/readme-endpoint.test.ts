@@ -9,9 +9,11 @@
 // harmless.
 //
 // So both implementations are driven over one shared corpus and must agree, on
-// every payload, with each other and with the expected verdict. The PHP function
-// is extracted from README.md itself, not from a copy: a fix applied to only one
-// of the two fails here.
+// every payload, with each other and with the expected verdict. The PHP is
+// extracted from README.md itself and EXECUTED — WordPress's four functions are
+// stubbed, the registered callback is captured and called, and `$wpdb` records
+// whether the query would have run. Nothing here re-implements the endpoint's
+// checks, so deleting one of them in the README fails this test.
 import { describe, it, expect, vi, beforeAll, afterAll } from 'vitest';
 import http from 'node:http';
 import fs from 'node:fs';
@@ -67,8 +69,55 @@ function readmePhp(): string {
   const bodyStart = start + '\n```php\n'.length;
   const end = md.indexOf('\n```\n', bodyStart);
   expect(end, 'the ```php block in README.md is unterminated').toBeGreaterThan(-1);
-  return md.slice(bodyStart, end);
+  const body = md.slice(bodyStart, end);
+  // Guards against the extraction silently matching something else.
+  expect(body, 'the ```php block does not define the scanner').toContain('function mcp_wp_normalize_sql');
+  expect(body, 'the ```php block does not register the endpoint').toContain('register_rest_route');
+  return body;
 }
+
+/** Just enough WordPress for the snippet to run, plus a driver over the corpus. */
+const PHP_HARNESS_HEAD = `<?php
+$MCP_WP_CALLBACK = null;
+define('ARRAY_A', 'ARRAY_A');
+
+class MCP_WP_Wpdb {
+    public $last_error = '';
+    public $ran = null;
+    public function get_results($query, $mode = null) { $this->ran = $query; return array(); }
+}
+class WP_Error {
+    public $code;
+    public function __construct($code = '', $message = '', $data = array()) { $this->code = $code; }
+}
+class MCP_WP_Request {
+    private $params;
+    public function __construct($params) { $this->params = $params; }
+    public function get_param($key) { return array_key_exists($key, $this->params) ? $this->params[$key] : null; }
+}
+function current_user_can($capability) { return true; }
+function register_rest_route($namespace, $route, $args) { $GLOBALS['MCP_WP_CALLBACK'] = $args['callback']; }
+// Run the registration closure immediately rather than on a hook.
+function add_action($hook, $callback) { $callback(); }
+$wpdb = new MCP_WP_Wpdb();
+`;
+
+const PHP_HARNESS_TAIL = `
+$callback = $GLOBALS['MCP_WP_CALLBACK'];
+if (!is_callable($callback)) { fwrite(STDERR, "no callback registered\\n"); exit(2); }
+
+$corpus = json_decode(file_get_contents($argv[1]), true);
+$out = array();
+foreach (array_merge($corpus['must_reject'], $corpus['must_allow']) as $query) {
+    $GLOBALS['wpdb']->ran = null;
+    $result = $callback(new MCP_WP_Request(array('query' => $query)));
+    $out[$query] = array(
+        'verdict' => ($result instanceof WP_Error) ? 'REJECT' : 'ALLOW',
+        'ran' => $GLOBALS['wpdb']->ran !== null,
+    );
+}
+echo json_encode($out);
+`;
 
 function hasPhp(): boolean {
   try {
@@ -88,18 +137,17 @@ describe('the README WordPress endpoint agrees with the client', () => {
     if (process.env.CI) expect(php, 'php is required in CI to check the README endpoint').toBe(true);
   });
 
+  it('has a corpus with payloads in it', () => {
+    // A guard against every assertion below passing over an empty list.
+    expect(corpus.must_reject.length).toBeGreaterThan(20);
+    expect(corpus.must_allow.length).toBeGreaterThan(8);
+  });
+
   it.skipIf(!php)('is valid PHP', () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'mcp-wp-readme-'));
     try {
       const file = path.join(dir, 'snippet.php');
-      // Stub the WordPress functions the snippet calls, so `php -l` sees the
-      // whole block rather than only the standalone function.
-      fs.writeFileSync(
-        file,
-        '<?php\nfunction add_action($a, $b) {}\nfunction register_rest_route($a, $b, $c) {}\n' +
-          'function current_user_can($c) { return true; }\nclass WP_Error { function __construct() {} }\n' +
-          readmePhp()
-      );
+      fs.writeFileSync(file, PHP_HARNESS_HEAD + readmePhp());
       execFileSync('php', ['-l', file], { stdio: 'pipe' });
     } finally {
       fs.rmSync(dir, { recursive: true, force: true });
@@ -107,44 +155,21 @@ describe('the README WordPress endpoint agrees with the client', () => {
   });
 
   it.skipIf(!php)('returns the same verdict as the client on every corpus payload', async () => {
-    const source = readmePhp();
-    const fnEnd = source.indexOf('\nadd_action(');
-    expect(fnEnd, 'the snippet no longer defines the scanner before add_action()').toBeGreaterThan(-1);
-
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'mcp-wp-readme-'));
-    let phpVerdicts: Record<string, string>;
+    let endpoint: Record<string, { verdict: string; ran: boolean }>;
     try {
       const driver = path.join(dir, 'driver.php');
       const corpusFile = path.join(dir, 'corpus.json');
       fs.writeFileSync(corpusFile, JSON.stringify(corpus));
-      fs.writeFileSync(
-        driver,
-        [
-          '<?php',
-          source.slice(0, fnEnd),
-          // The endpoint's own checks, in order, minus WordPress itself.
-          'function mcp_wp_verdict($query) {',
-          "  if (!is_string($query)) return 'REJECT';",
-          '  $t = ltrim($query, " \\t\\n\\r\\0\\x0B\\f");',
-          "  if (stripos($t, 'SELECT') !== 0 && stripos($t, 'WITH ') !== 0 && stripos($t, 'EXPLAIN ') !== 0) return 'REJECT';",
-          '  $n = mcp_wp_normalize_sql($query);',
-          "  if (!is_string($n)) return 'REJECT';",
-          "  if (preg_match('/;\\\\s*\\\\S/', $n)) return 'REJECT';",
-          "  if (preg_match('/\\\\b(INTO|LOAD_FILE)\\\\b/i', $n)) return 'REJECT';",
-          "  if (preg_match('/\\\\b(DROP|DELETE|UPDATE|ALTER|CREATE|GRANT|REVOKE)\\\\b/i', $n)) return 'REJECT';",
-          "  if (preg_match('/\\\\b(INSERT|TRUNCATE)\\\\b(?!\\\\s*\\\\()/i', $n)) return 'REJECT';",
-          "  return 'ALLOW';",
-          '}',
-          '$c = json_decode(file_get_contents($argv[1]), true);',
-          '$out = array();',
-          "foreach (array_merge($c['must_reject'], $c['must_allow']) as $q) { $out[$q] = mcp_wp_verdict($q); }",
-          'echo json_encode($out);'
-        ].join('\n')
-      );
-      phpVerdicts = JSON.parse(execFileSync('php', [driver, corpusFile], { encoding: 'utf8' }));
+      fs.writeFileSync(driver, PHP_HARNESS_HEAD + readmePhp() + PHP_HARNESS_TAIL);
+      endpoint = JSON.parse(execFileSync('php', [driver, corpusFile], { encoding: 'utf8' }));
     } finally {
       fs.rmSync(dir, { recursive: true, force: true });
     }
+
+    // The harness reached the endpoint at all.
+    expect(Object.keys(endpoint).length).toBe(corpus.must_reject.length + corpus.must_allow.length);
+    expect(Object.values(endpoint).some((r) => r.ran)).toBe(true);
 
     for (const [expected, payloads] of [['REJECT', corpus.must_reject], ['ALLOW', corpus.must_allow]] as const) {
       for (const query of payloads) {
@@ -153,9 +178,10 @@ describe('the README WordPress endpoint agrees with the client', () => {
         const client = result.toolResult.isError ? 'REJECT' : 'ALLOW';
 
         expect(client, `client on ${JSON.stringify(query)}`).toBe(expected);
-        expect(phpVerdicts[query], `README endpoint on ${JSON.stringify(query)}`).toBe(expected);
+        expect(endpoint[query].verdict, `README endpoint on ${JSON.stringify(query)}`).toBe(expected);
         if (expected === 'REJECT') {
-          expect(requestsReceived, `rejected but still sent: ${JSON.stringify(query)}`).toBe(0);
+          expect(requestsReceived, `client rejected but still sent: ${JSON.stringify(query)}`).toBe(0);
+          expect(endpoint[query].ran, `endpoint rejected but still queried: ${JSON.stringify(query)}`).toBe(false);
         }
       }
     }

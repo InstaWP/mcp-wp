@@ -100,16 +100,35 @@ export function redactHeaders(headers: Record<string, any> | undefined): Record<
 // pass their params straight through, so a `debug` run logged a WordPress user's
 // password in cleartext one line below the header bag this PR redacts — the same
 // exposure, through the other half of the same log statement.
-const REDACTED_KEYS = /^(?:password|pass|pwd|app_password|application_password|token|access_token|refresh_token|secret|client_secret|api_key|apikey|private_key|credential|credentials|authorization|cookie)$/i;
+// Matched as a SUBSTRING, not as the whole key. An exact list has to guess every
+// name a credential might arrive under and misses the ones that matter:
+// `user_pass` is WordPress's own column, and `update_content` forwards arbitrary
+// `meta`/`custom_fields` straight into the logged body, where a plugin's
+// `smtp_password` is an ordinary key. Over-redacting a debug log costs nothing.
+const REDACTED_KEYS = /(pass|pwd|secret|token|api[_-]?key|private[_-]?key|credential|auth|cookie|signature)/i;
 
 /**
  * Replace the value of every credential-bearing key with a placeholder, walking
- * nested objects and arrays. Anything that is not a plain object or array is
- * returned as-is, so FormData and streams are untouched (they are not logged).
+ * plain objects and arrays.
+ *
+ * Only plain objects are walked: anything else (a Date, a Buffer, a stream) is
+ * returned untouched, because `Object.entries` on those loses the value —
+ * a Date would log as `{}` and a Buffer as a map of byte offsets.
  */
 export function redactData(value: any, depth = 0): any {
-  if (depth > 6 || value === null || typeof value !== 'object') return value;
+  if (value === null || typeof value !== 'object') return value;
+
+  const isPlain = Array.isArray(value)
+    || Object.getPrototypeOf(value) === Object.prototype
+    || Object.getPrototypeOf(value) === null;
+  if (!isPlain) return value;
+
+  // A subtree deeper than this is replaced rather than returned raw, so the cap
+  // cannot become a way to smuggle a credential past the redaction.
+  if (depth > 6) return '[TRUNCATED]';
+
   if (Array.isArray(value)) return value.map((v) => redactData(v, depth + 1));
+
   const safe: Record<string, any> = {};
   for (const [key, v] of Object.entries(value)) {
     safe[key] = REDACTED_KEYS.test(key) ? '[REDACTED]' : redactData(v, depth + 1);

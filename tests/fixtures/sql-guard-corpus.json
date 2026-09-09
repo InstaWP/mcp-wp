@@ -29,7 +29,13 @@
     "SELECT 1 FROM wp_posts DROP",
     "SELECT 1 \u0000",
     "DELETE FROM wp_users",
-    "UPDATE wp_users SET x = 1"
+    "UPDATE wp_users SET x = 1",
+    "SELECT `LOAD_FILE`--\u0001\n('/etc/passwd')",
+    "SELECT `LOAD_FILE`--\u0007\n('/etc/passwd')",
+    "SELECT `LOAD_FILE`--\u001f\n('/etc/passwd')",
+    "SELECT `LOAD_FILE`--\u007f\n('/etc/passwd')",
+    "SELECT 1 --\u0001\n INTO OUTFILE '/tmp/x'",
+    "REPLACE wp_posts SET ID = 1"
   ],
   "must_allow": [
     "SELECT * FROM wp_posts WHERE post_type = 'post' LIMIT 10",
@@ -44,6 +50,8 @@
     "SELECT 1 # trailing comment",
     "SELECT 2-1 AS a",
     "WITH x AS (SELECT 1 AS n) SELECT n FROM x",
-    "EXPLAIN SELECT * FROM wp_posts"
+    "EXPLAIN SELECT * FROM wp_posts",
+    "SELECT REPLACE(post_title, 'a', 'b') FROM wp_posts LIMIT 1",
+    "SELECT 1--2 AS a"
   ]
 }

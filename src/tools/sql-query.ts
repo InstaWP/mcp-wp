@@ -19,16 +19,20 @@ type ExecuteSqlQueryParams = z.infer<typeof executeSqlQuerySchema>;
 // as a "dangerous SQL statement". A boundary also catches the keyword at end of
 // input, which the trailing-whitespace form missed.
 //
-// INSERT and TRUNCATE are also the names of ordinary read-only string/numeric
-// functions — `SELECT INSERT('Quadratic',3,4,'What')`, `SELECT TRUNCATE(1.234,2)`
-// — so those two do not fire when a `(` follows. Neither statement form can reach
-// this point anyway: the prefix check has already required SELECT/WITH/EXPLAIN.
+// INSERT, TRUNCATE and REPLACE are also the names of ordinary read-only
+// string/numeric functions — `SELECT INSERT('Quadratic',3,4,'What')`,
+// `SELECT TRUNCATE(1.234,2)`, `SELECT REPLACE(a,'x','y')` — so those three do not
+// fire when a `(` follows. No statement form puts `(` straight after the keyword,
+// and none of the three can reach this point anyway: the prefix check has already
+// required SELECT/WITH/EXPLAIN. REPLACE is listed because `REPLACE tbl SET ...`
+// needs no INTO, so nothing else here would catch it.
 const DANGEROUS_PATTERNS = [
   /\bDROP\b/i,
   /\bDELETE\b/i,
   /\bUPDATE\b/i,
   /\bINSERT\b(?!\s*\()/i,
   /\bTRUNCATE\b(?!\s*\()/i,
+  /\bREPLACE\b(?!\s*\()/i,
   /\bALTER\b/i,
   /\bCREATE\b/i,
   /\bGRANT\b/i,
@@ -59,10 +63,21 @@ const QUOTES = new Set(["'", '"', '`']);
 // refused outright — nothing legitimate sends one.
 const SENTINEL = '\u0000';
 
-// MySQL starts a `--` comment on ASCII whitespace only. JS's /\s/ also matches
-// U+00A0, U+2028 and U+FEFF, which the server does NOT treat as whitespace — so
-// using it here would blank text the server goes on to execute.
-const SQL_SPACE = /[ \t\n\r\f\v]/;
+// What the server accepts after `--` to start a comment. The lexer's test is
+// `my_isspace(...) || my_iscntrl(...)`, i.e. every byte through 0x20 plus DEL —
+// the manual's "whitespace or control character".
+//
+// This set has to equal the server's exactly, and it is not obvious which way is
+// safe, because it is wrong in both directions. Too WIDE and text the server
+// executes gets blanked. Too NARROW and text the server drops is kept, which
+// pushes the tokens either side apart: `\`LOAD_FILE\`--<0x01>\n(...)` left the
+// un-stripped comment sitting between the quoted name and its `(`, so the
+// adjacency test below did not fire and the identifier had already been blanked.
+// Verified on MySQL 8.0.46 and MariaDB 11.8: that payload reads the file.
+//
+// JS's /\s/ is the too-wide end of that (U+00A0, U+2028, U+FEFF), which is why
+// it is not used here.
+const SQL_SPACE = /[\x00-\x20\x7f]/;
 
 /**
  * Rewrite a query so it can be pattern-matched safely: every string literal,

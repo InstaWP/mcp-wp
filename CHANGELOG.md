@@ -22,7 +22,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   executable comment, whose contents the server runs; or **a function called by a quoted name** —
   ``SELECT `LOAD_FILE`('/etc/passwd')`` and its `ANSI_QUOTES` double-quoted form resolve to the builtin
   on both engines (verified on MariaDB 11.8 and MySQL 8.0.46), so blanking the identifier the way an
-  identifier is blanked would have erased the keyword before any check saw it. The example WordPress
+  identifier is blanked would have erased the keyword before any check saw it. That test runs on the
+  finished normalized query rather than on the raw text, so it holds however the name is separated from
+  its `(` — including by a comment, and including a `--` comment started by a **control character**,
+  which both servers accept (`my_isspace || my_iscntrl`) and no whitespace class covers. The `--`
+  comment rule is therefore matched as `[\x00-\x20\x7f]`: too wide blanks text the server executes, and
+  too narrow leaves text the server drops sitting between the tokens being compared. The example WordPress
   endpoint in `README.md` now repeats these checks server-side using the same scanner, since the
   client's validation is not a boundary — its previous regex-based normalizer stripped comments before
   string literals, which made `SELECT '#' INTO OUTFILE '/tmp/x'` read as harmless.
@@ -44,10 +49,12 @@ Both reported privately by Syed Anas Mohiuddin.
 - **`execute_sql_query` no longer refuses an identifier that merely ends in a DDL keyword.** The
   blocklist matched `UPDATE\s+` rather than the whole word, so `SELECT last_update FROM …` came back as
   "potentially dangerous SQL statement". It now matches on word boundaries, which also catches a
-  keyword at the very end of a query — something the trailing-whitespace form missed. `INSERT` and
-  `TRUNCATE` are exempted when a `(` follows, because both are also ordinary read-only functions
-  (`SELECT INSERT('Quadratic',3,4,'What')`, `SELECT TRUNCATE(1.234,2)`); neither statement form can
-  reach that check anyway, since the query must already start with SELECT/WITH/EXPLAIN.
+  keyword at the very end of a query — something the trailing-whitespace form missed. `INSERT`,
+  `TRUNCATE` and `REPLACE` are exempted when a `(` follows, because all three are also ordinary
+  read-only functions (`SELECT INSERT('Quadratic',3,4,'What')`, `SELECT TRUNCATE(1.234,2)`,
+  `SELECT REPLACE(a,'x','y')`); no statement form can reach that check anyway, since the query must
+  already start with SELECT/WITH/EXPLAIN. `REPLACE` is new to the list — `REPLACE tbl SET …` needs no
+  `INTO`, so nothing else there would have caught it.
 - **The `README.md` endpoint accepts `WITH …` and `EXPLAIN …`**, which the client allows and the
   example rejected with a 400, and returns a 400 rather than a PHP error when `query` is not a string.
 - **`README.md` no longer claims queries are logged to `logs/wordpress-api.log`.** No such file is
