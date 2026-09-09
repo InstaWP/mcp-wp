@@ -108,6 +108,41 @@ describe('execute_sql_query rejects queries it cannot read unambiguously', () =>
     expect(requestsReceived).toBe(0);
   });
 
+  it('rejects a MariaDB executable comment', async () => {
+    // MariaDB executes /*M! ... */ and /*M!! ... */ exactly as MySQL executes
+    // /*! ... */, and WordPress hosting is predominantly MariaDB. Verified on
+    // MariaDB 11.8: this payload with the guard removed writes the file.
+    const { isError } = await run("SELECT 'x' /*M!50000 INTO OUTFILE '/var/www/html/wp-content/uploads/pwn.php' */");
+    expect(isError).toBe(true);
+    expect(requestsReceived).toBe(0);
+
+    const doubled = await run("SELECT 'x' /*M!!50000 INTO OUTFILE '/tmp/pwn' */");
+    expect(doubled.isError).toBe(true);
+    expect(requestsReceived).toBe(0);
+  });
+
+  it('rejects a function called by a backtick-quoted name', async () => {
+    // Blanking the identifier would erase LOAD_FILE before any check saw it,
+    // while the server resolves the quoted name exactly as the bare one.
+    // Verified on MariaDB 11.8 and MySQL 8.0.46: this reads the file.
+    const { isError } = await run("SELECT `LOAD_FILE`('/etc/passwd')");
+    expect(isError).toBe(true);
+    expect(requestsReceived).toBe(0);
+  });
+
+  it('rejects a function called by a double-quoted name (ANSI_QUOTES)', async () => {
+    const { isError } = await run('SELECT "LOAD_FILE"(\'/etc/passwd\')');
+    expect(isError).toBe(true);
+    expect(requestsReceived).toBe(0);
+  });
+
+  it('rejects a quoted function name separated from its parenthesis by whitespace', async () => {
+    // IGNORE_SPACE lets a builtin be called with a space before the paren.
+    const { isError } = await run("SELECT `LOAD_FILE` ('/etc/passwd')");
+    expect(isError).toBe(true);
+    expect(requestsReceived).toBe(0);
+  });
+
   it('rejects a backslash-escaped quote inside a literal', async () => {
     // Where the literal ends depends on the server's NO_BACKSLASH_ESCAPES mode,
     // which is the lever every quote-confusion bypass pulls.
@@ -155,6 +190,22 @@ describe('execute_sql_query still allows real read-only queries', () => {
     const { isError } = await run('SELECT 1; DROP TABLE wp_users');
     expect(isError).toBe(true);
     expect(requestsReceived).toBe(0);
+  });
+
+  it('blocks a second statement that the DDL blocklist would not catch', async () => {
+    // The payload above is caught twice over — by the `;` check and by DROP — so
+    // it cannot tell whether the multi-statement check works. This one can: with
+    // that check disabled it is the only case in the file that stays green.
+    const { isError, text } = await run('SELECT 1; SELECT 2');
+    expect(isError).toBe(true);
+    expect(text).toMatch(/Multiple SQL statements/);
+    expect(requestsReceived).toBe(0);
+  });
+
+  it('no longer rejects an identifier that merely ends in a DDL keyword', async () => {
+    // `UPDATE\s+` matched `last_update `, so this was refused as dangerous.
+    const { isError } = await run('SELECT last_update FROM wp_term_taxonomy LIMIT 1');
+    expect(isError).toBe(false);
   });
 
   it('still blocks a non-SELECT statement', async () => {

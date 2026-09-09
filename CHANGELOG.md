@@ -17,10 +17,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   identifiers and comments collapsed to whitespace — so a keyword hidden inside a literal is no longer
   a false positive (`SELECT … WHERE title = 'how to drop a table'` used to be refused) and one split
   by a comment is not a bypass. A query that cannot be read unambiguously is rejected rather than
-  guessed at: an unterminated string or comment, a backslash-escaped quote inside a literal (its
-  meaning depends on the server's `NO_BACKSLASH_ESCAPES` sql_mode), or a `/*!` MySQL executable
-  comment, whose contents the server runs. The example WordPress endpoint in `README.md` now repeats
-  these checks server-side, since the client's validation is not a boundary.
+  guessed at: an unterminated string or comment; a backslash-escaped quote inside a literal (its
+  meaning depends on the server's `NO_BACKSLASH_ESCAPES` sql_mode); a `/*!` MySQL **or `/*M!` MariaDB**
+  executable comment, whose contents the server runs; or **a function called by a quoted name** —
+  ``SELECT `LOAD_FILE`('/etc/passwd')`` and its `ANSI_QUOTES` double-quoted form resolve to the builtin
+  on both engines (verified on MariaDB 11.8 and MySQL 8.0.46), so blanking the identifier the way an
+  identifier is blanked would have erased the keyword before any check saw it. The example WordPress
+  endpoint in `README.md` now repeats these checks server-side using the same scanner, since the
+  client's validation is not a boundary — its previous regex-based normalizer stripped comments before
+  string literals, which made `SELECT '#' INTO OUTFILE '/tmp/x'` read as harmless.
 - **Credential headers are redacted from debug logging.** `Authorization: Basic base64(user:app-password)`
   was logged verbatim at `debug` level, and base64 is reversible — so `WORDPRESS_LOG_LEVEL=debug` put
   the WordPress application password in the clear. Despite its name `logToFile` writes to stderr, which
@@ -30,6 +35,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 Both reported privately by Syed Anas Mohiuddin.
 
 ### Fixed
+- **`execute_sql_query` no longer refuses an identifier that merely ends in a DDL keyword.** The
+  blocklist matched `UPDATE\s+` rather than the whole word, so `SELECT last_update FROM …` came back as
+  "potentially dangerous SQL statement". It now matches on word boundaries, which also catches a
+  keyword at the very end of a query — something the trailing-whitespace form missed.
 - **`README.md` no longer claims queries are logged to `logs/wordpress-api.log`.** No such file is
   written: logging goes to stderr, only when `WORDPRESS_LOG_LEVEL=debug` is set (the default is
   `error`). Same correction in `CLAUDE.md`.

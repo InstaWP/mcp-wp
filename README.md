@@ -485,15 +485,25 @@ The `execute_sql_query` tool allows you to run read-only SQL queries against you
   `LOAD_FILE()` — is rejected. These are valid inside a SELECT, so a "starts with SELECT" check alone
   does not stop an arbitrary file read, or a webshell being written into `wp-content/uploads`
 - A query that cannot be read unambiguously is rejected rather than guessed at: an unterminated string
-  or comment, a backslash-escaped quote inside a literal (whose meaning depends on the server's
-  `NO_BACKSLASH_ESCAPES` sql_mode — use `''` to embed a quote instead), or a MySQL executable comment
+  or comment; a backslash-escaped quote inside a literal (whose meaning depends on the server's
+  `NO_BACKSLASH_ESCAPES` sql_mode — use `''` to embed a quote instead); a MySQL `/*!` or MariaDB `/*M!`
+  executable comment, whose contents the server actually runs; or a function called by a quoted name
+  (`` `LOAD_FILE`('/etc/passwd') `` resolves to the builtin on both engines, so the quoted form is
+  refused — call functions by their unquoted name)
 - This tool requires admin-level permissions (`manage_options` capability)
 
-**These checks run in the MCP client, so they are not a boundary on their own.** Anything holding the
-credentials can call the REST endpoint directly, so the endpoint must enforce its own limits — the
-example below repeats the checks server-side. The strongest limit is not a pattern at all: give the
-endpoint a MySQL user with `SELECT` only and **no `FILE` privilege** (or set `secure_file_priv`), so a
-bypass has nothing left to reach.
+**Set the database privileges. That is the boundary; the checks above are not.** Give the endpoint a
+MySQL/MariaDB user with `SELECT` only and **no `FILE` privilege** (or set `secure_file_priv`), so a
+query that gets past a pattern has nothing left to reach. The checks are a guard against a model —
+including one under prompt injection — issuing something the tool description promised it would not;
+they are pattern matching over SQL text, and pattern matching over SQL text is not a parser. Two known
+gaps are left open on purpose: a `SELECT` can still be expensive or lock-taking (`SLEEP()`,
+`BENCHMARK()`, `GET_LOCK()`, `FOR UPDATE`), and neither the client nor the endpoint limits how long a
+query runs.
+
+**And the client's checks are not a boundary at all**, because anything holding the credentials can
+call the REST endpoint directly. The endpoint must therefore enforce its own limits — the example
+below repeats them server-side, using the same scanner the client uses.
 
 **Logging:** nothing is logged unless you set `WORDPRESS_LOG_LEVEL=debug` (the default is `error`).
 Debug output goes to **stderr**, which for a stdio MCP server the host client (Claude Desktop and
@@ -505,6 +515,106 @@ redacted; query text and result rows are not — avoid putting sensitive data in
 To enable this feature, add the following code to your WordPress site (via a custom plugin or your theme's `functions.php`):
 
 ```php
+/**
+ * Blank every string literal, quoted identifier and comment, or return null when
+ * the query cannot be read unambiguously.
+ *
+ * A scanner rather than a list of regexes, because the order regexes run in is
+ * itself a bypass: strip comments first and `SELECT '#' INTO OUTFILE '/x'` has
+ * everything from the `#` onwards removed, so the INTO disappears from the text
+ * you check while the server still runs it.
+ *
+ * This mirrors normalizeQuery() in the client's src/tools/sql-query.ts — keep the
+ * two the same. Four things are refused rather than guessed at:
+ *   - an unterminated literal or block comment;
+ *   - a backslash before a quote, because where the literal ends then depends on
+ *     the server's NO_BACKSLASH_ESCAPES sql_mode (use '' to embed a quote);
+ *   - /*! ... *\/ (MySQL) and /*M! ... *\/ (MariaDB) executable comments, whose
+ *     contents the server RUNS — they are not comments and cannot be stripped;
+ *   - a quoted token immediately followed by `(`, i.e. a function called by a
+ *     quoted name. Both engines resolve `LOAD_FILE`('/etc/passwd') exactly as the
+ *     bare builtin, so blanking the identifier would erase the keyword you are
+ *     looking for.
+ */
+function mcp_wp_normalize_sql($query) {
+    $out = '';
+    $len = strlen($query);
+    $i = 0;
+
+    while ($i < $len) {
+        $ch = $query[$i];
+
+        if ($ch === "'" || $ch === '"' || $ch === '`') {
+            $quote = $ch;
+            $i++;
+            $closed = false;
+            while ($i < $len) {
+                $c = $query[$i];
+                if ($c === '\\' && $quote !== '`') {
+                    $next = $i + 1 < $len ? $query[$i + 1] : '';
+                    if ($next === "'" || $next === '"' || $next === '`') {
+                        return null;
+                    }
+                    $i += 2;
+                    continue;
+                }
+                if ($c === $quote) {
+                    if ($i + 1 < $len && $query[$i + 1] === $quote) { $i += 2; continue; }
+                    $i++;
+                    $closed = true;
+                    break;
+                }
+                $i++;
+            }
+            if (!$closed) {
+                return null;
+            }
+            $after = $i;
+            while ($after < $len && ctype_space($query[$after])) { $after++; }
+            if ($after < $len && $query[$after] === '(') {
+                return null;
+            }
+            $out .= ' ';
+            continue;
+        }
+
+        if ($ch === '/' && $i + 1 < $len && $query[$i + 1] === '*') {
+            if (preg_match('/^[Mm]?!/', substr($query, $i + 2, 2))) {
+                return null;
+            }
+            $end = strpos($query, '*/', $i + 2);
+            if ($end === false) {
+                return null;
+            }
+            $i = $end + 2;
+            $out .= ' ';
+            continue;
+        }
+
+        // MySQL only starts a `--` comment when whitespace (or end of input)
+        // follows; `a--b` is arithmetic.
+        if ($ch === '-' && $i + 1 < $len && $query[$i + 1] === '-'
+            && ($i + 2 >= $len || ctype_space($query[$i + 2]))) {
+            $nl = strpos($query, "\n", $i);
+            $i = $nl === false ? $len : $nl;
+            $out .= ' ';
+            continue;
+        }
+
+        if ($ch === '#') {
+            $nl = strpos($query, "\n", $i);
+            $i = $nl === false ? $len : $nl;
+            $out .= ' ';
+            continue;
+        }
+
+        $out .= $ch;
+        $i++;
+    }
+
+    return $out;
+}
+
 add_action('rest_api_init', function() {
     register_rest_route('mcp/v1', '/query', array(
         'methods' => 'POST',
@@ -518,33 +628,22 @@ add_action('rest_api_init', function() {
                 return new WP_Error('unauthorized', 'Unauthorized', array('status' => 401));
             }
 
-            // Only allow SELECT queries
-            if (stripos(trim($query), 'SELECT') !== 0) {
-                return new WP_Error('invalid_query', 'Only SELECT queries allowed', array('status' => 400));
+            // Read-only statements only. Checked on the raw query, like the
+            // client, so a leading comment stays a rejection rather than
+            // becoming allowed once comments are blanked below.
+            $trimmed = ltrim($query);
+            if (stripos($trimmed, 'SELECT') !== 0
+                && stripos($trimmed, 'WITH ') !== 0
+                && stripos($trimmed, 'EXPLAIN ') !== 0) {
+                return new WP_Error('invalid_query', 'Only read-only queries (SELECT, WITH...SELECT, EXPLAIN) are allowed', array('status' => 400));
             }
 
-            // Do not trust the caller's validation. Strip string literals, quoted
-            // identifiers and comments first, so a keyword inside a literal is not a
-            // false positive and one split by a comment is not a bypass (MySQL treats
-            // a comment as whitespace). A /*! ... */ comment is EXECUTED by MySQL, so
-            // it is refused rather than stripped.
-            if (strpos($query, '/*!') !== false) {
-                return new WP_Error('invalid_query', 'Executable comments are not allowed', array('status' => 400));
-            }
+            // Do not trust the caller's validation. Every check below runs against
+            // the normalized query, so a keyword inside a literal is not a false
+            // positive and one split by a comment is not a bypass (the server
+            // treats a comment as whitespace).
+            $normalized = mcp_wp_normalize_sql($query);
 
-            $normalized = preg_replace(
-                array(
-                    '#/\*.*?\*/#s',            // /* block comments */
-                    '/--\s[^\n]*/',            // -- line comments
-                    '/#[^\n]*/',               // # line comments
-                    "/'(?:[^'\\\\]|\\\\.|'')*'/s", // 'string literals'
-                    '/`(?:[^`]|``)*`/s',       // `quoted identifiers`
-                ),
-                ' ',
-                $query
-            );
-
-            // preg_replace() returns null when it hits a backtrack/recursion limit.
             if (!is_string($normalized)) {
                 return new WP_Error('invalid_query', 'Query could not be validated', array('status' => 400));
             }

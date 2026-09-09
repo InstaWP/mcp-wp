@@ -14,16 +14,20 @@ const executeSqlQuerySchema = z.object({
 // Type definition
 type ExecuteSqlQueryParams = z.infer<typeof executeSqlQuerySchema>;
 
+// Matched on word boundaries rather than as `KEYWORD\s+`: the latter fires on any
+// identifier that merely ends in one, so `SELECT last_update FROM ...` was refused
+// as a "dangerous SQL statement". A boundary also catches the keyword at end of
+// input, which the trailing-whitespace form missed.
 const DANGEROUS_PATTERNS = [
-  /DROP\s+/i,
-  /DELETE\s+/i,
-  /UPDATE\s+/i,
-  /INSERT\s+/i,
-  /TRUNCATE\s+/i,
-  /ALTER\s+/i,
-  /CREATE\s+/i,
-  /GRANT\s+/i,
-  /REVOKE\s+/i
+  /\bDROP\b/i,
+  /\bDELETE\b/i,
+  /\bUPDATE\b/i,
+  /\bINSERT\b/i,
+  /\bTRUNCATE\b/i,
+  /\bALTER\b/i,
+  /\bCREATE\b/i,
+  /\bGRANT\b/i,
+  /\bREVOKE\b/i
 ];
 
 // Constructs that are valid SELECT syntax — so they pass a "starts with SELECT"
@@ -62,7 +66,12 @@ const QUOTES = new Set(["'", '"', '`']);
  *    not knowable from the text alone, which is precisely what quote-confusion
  *    bypasses exploit. Use '' to embed a quote instead;
  *  - a MySQL executable comment (slash-star-bang), whose contents the server runs
- *    — it is not a comment at all, and therefore cannot be stripped.
+ *    — it is not a comment at all, and therefore cannot be stripped. MariaDB's
+ *    slash-star-M-bang form is executed the same way and is refused with it;
+ *  - a quoted token immediately followed by `(`, i.e. a function called by a
+ *    quoted name. Blanking it the way an identifier is blanked would erase the
+ *    very keyword this guard exists to see, and both engines resolve the quoted
+ *    name exactly as the bare one.
  */
 export function normalizeQuery(query: string): string | null {
   let out = '';
@@ -94,13 +103,31 @@ export function normalizeQuery(query: string): string | null {
         i++;
       }
       if (!closed) return null;
+
+      // A quoted token immediately followed by `(` is a function call, and both
+      // engines resolve a quoted builtin exactly as the bare name: verified on
+      // MariaDB 11.8 and MySQL 8.0.46, SELECT `LOAD_FILE`('/etc/passwd') reads
+      // the file, as does the double-quoted form under ANSI_QUOTES. Blanking it
+      // like an ordinary identifier would hide the keyword from every check
+      // below, so it is refused instead — nothing read-only needs to call a
+      // function by a quoted name. Everywhere else a quoted token is data or an
+      // identifier and is still blanked, which is what keeps
+      // `... WHERE post_title = 'how to drop a table'` legal.
+      let after = i;
+      while (after < query.length && /\s/.test(query[after])) after++;
+      if (query[after] === '(') return null;
+
       out += ' ';
       continue;
     }
 
     if (ch === '/' && query[i + 1] === '*') {
-      // /*! ... */ is a MySQL executable comment: the server runs its contents.
-      if (query[i + 2] === '!') return null;
+      // /*! ... */ (MySQL) and /*M! ... */ / /*M!! ... */ (MariaDB) are executable
+      // comments: the server runs their contents, so a stripper that treated them
+      // as comments would carry the payload past every check below. Verified on
+      // MariaDB 11.8 — `SELECT 'x' /*M!50000 INTO OUTFILE '/tmp/pwn' */` writes
+      // the file.
+      if (/^[Mm]?!/.test(query.slice(i + 2, i + 4))) return null;
       const end = query.indexOf('*/', i + 2);
       if (end === -1) return null;
       i = end + 2;
@@ -174,7 +201,7 @@ export const sqlQueryHandlers = {
       if (normalized === null) {
         return {
           toolResult: {
-            content: [{ type: 'text' as const, text: 'Error: Query could not be parsed unambiguously (unterminated string or comment, a backslash-escaped quote inside a literal, or a /*! executable comment). Rewrite it — use \'\' to embed a quote — and try again.' }],
+            content: [{ type: 'text' as const, text: 'Error: Query could not be parsed unambiguously (unterminated string or comment, a backslash-escaped quote inside a literal, a /*! or /*M! executable comment, or a function called by a quoted name). Rewrite it — use \'\' to embed a quote, and call functions by their unquoted name — and try again.' }],
             isError: true
           }
         };
