@@ -26,6 +26,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   endpoint in `README.md` now repeats these checks server-side using the same scanner, since the
   client's validation is not a boundary — its previous regex-based normalizer stripped comments before
   string literals, which made `SELECT '#' INTO OUTFILE '/tmp/x'` read as harmless.
+- **Credential-shaped request-body keys are redacted from debug logging too.** The `Data:` line one
+  below the header bag logged the request body verbatim, and `create_user`/`update_user` pass their
+  params straight through — so a `debug` run put a WordPress user's `password` in the clear in the same
+  stderr stream. `password`, `token`, `secret`, `api_key` and their siblings now log as `[REDACTED]`,
+  nested objects and arrays included. Query text and result rows are still not redacted; that is
+  documented rather than changed.
 - **Credential headers are redacted from debug logging.** `Authorization: Basic base64(user:app-password)`
   was logged verbatim at `debug` level, and base64 is reversible — so `WORDPRESS_LOG_LEVEL=debug` put
   the WordPress application password in the clear. Despite its name `logToFile` writes to stderr, which
@@ -38,7 +44,12 @@ Both reported privately by Syed Anas Mohiuddin.
 - **`execute_sql_query` no longer refuses an identifier that merely ends in a DDL keyword.** The
   blocklist matched `UPDATE\s+` rather than the whole word, so `SELECT last_update FROM …` came back as
   "potentially dangerous SQL statement". It now matches on word boundaries, which also catches a
-  keyword at the very end of a query — something the trailing-whitespace form missed.
+  keyword at the very end of a query — something the trailing-whitespace form missed. `INSERT` and
+  `TRUNCATE` are exempted when a `(` follows, because both are also ordinary read-only functions
+  (`SELECT INSERT('Quadratic',3,4,'What')`, `SELECT TRUNCATE(1.234,2)`); neither statement form can
+  reach that check anyway, since the query must already start with SELECT/WITH/EXPLAIN.
+- **The `README.md` endpoint accepts `WITH …` and `EXPLAIN …`**, which the client allows and the
+  example rejected with a 400, and returns a 400 rather than a PHP error when `query` is not a string.
 - **`README.md` no longer claims queries are logged to `logs/wordpress-api.log`.** No such file is
   written: logging goes to stderr, only when `WORDPRESS_LOG_LEVEL=debug` is set (the default is
   `error`). Same correction in `CLAUDE.md`.

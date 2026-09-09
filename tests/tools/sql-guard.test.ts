@@ -143,6 +143,34 @@ describe('execute_sql_query rejects queries it cannot read unambiguously', () =>
     expect(requestsReceived).toBe(0);
   });
 
+  it('rejects a quoted function name separated from its parenthesis by a comment', async () => {
+    // A comment is whitespace to the server, so a lookahead over the raw text
+    // that skips only whitespace covers the separators it was written for and
+    // nothing else. Verified on MySQL 8.0.46: the first of these reads the file.
+    // The test for a quoted name therefore runs on the NORMALIZED query, where
+    // every comment has already become a space.
+    const payloads = [
+      "SELECT `LOAD_FILE`/**/('/etc/passwd')",
+      "SELECT `LOAD_FILE`#c\n('/etc/passwd')",
+      "SELECT `LOAD_FILE`-- c\n('/etc/passwd')",
+      "SELECT \"LOAD_FILE\"/**/('/etc/passwd')",
+      "SELECT `LOAD_FILE` /**/ ('/etc/passwd')",
+      "SELECT `LOAD_FILE`/**//**/('/etc/passwd')"
+    ];
+    for (const payload of payloads) {
+      const { isError } = await run(payload);
+      expect(isError, payload).toBe(true);
+    }
+    expect(requestsReceived).toBe(0);
+  });
+
+  it('rejects a query containing a NUL byte', async () => {
+    // Indistinguishable from the marker normalizeQuery uses internally.
+    const { isError } = await run('SELECT 1 \u0000');
+    expect(isError).toBe(true);
+    expect(requestsReceived).toBe(0);
+  });
+
   it('rejects a backslash-escaped quote inside a literal', async () => {
     // Where the literal ends depends on the server's NO_BACKSLASH_ESCAPES mode,
     // which is the lever every quote-confusion bypass pulls.
@@ -206,6 +234,22 @@ describe('execute_sql_query still allows real read-only queries', () => {
     // `UPDATE\s+` matched `last_update `, so this was refused as dangerous.
     const { isError } = await run('SELECT last_update FROM wp_term_taxonomy LIMIT 1');
     expect(isError).toBe(false);
+  });
+
+  it('allows the read-only builtins that share a name with a DDL keyword', async () => {
+    // INSERT() is a string function and TRUNCATE() a numeric one. Word-boundary
+    // matching would refuse both, and neither statement form can reach this far
+    // anyway — the prefix check has already required SELECT/WITH/EXPLAIN.
+    expect((await run("SELECT INSERT('Quadratic', 3, 4, 'What')")).isError).toBe(false);
+    expect((await run('SELECT TRUNCATE(1.234, 2) FROM wp_posts LIMIT 1')).isError).toBe(false);
+  });
+
+  it('blocks a DDL keyword at the very end of the query', async () => {
+    // The coverage word boundaries ADD: `DROP\s+` needed trailing whitespace, so
+    // a keyword in final position matched nothing.
+    const { isError } = await run('SELECT 1 FROM wp_posts DROP');
+    expect(isError).toBe(true);
+    expect(requestsReceived).toBe(0);
   });
 
   it('still blocks a non-SELECT statement', async () => {

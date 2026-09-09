@@ -129,4 +129,27 @@ describe('debug logging never emits the application password', () => {
     expect(logged).not.toContain('secrettoken');
     expect(logged).toContain('[REDACTED]');
   });
+
+  it('redacts a credential in the request BODY, not only in the headers', async () => {
+    // create_user/update_user pass their params straight through, so the `Data:`
+    // line one below the header bag logged a WordPress user's password in
+    // cleartext into the same stderr stream.
+    const NEW_USER_PASSWORD = 'hunter2-correct-horse';
+    await makeWordPressRequest('POST', 'users', {
+      username: 'newuser',
+      email: 'new@example.com',
+      password: NEW_USER_PASSWORD,
+      meta: { api_key: 'sk-live-should-not-appear' }
+    });
+
+    const logged = stderr.join('');
+    expect(logged).toMatch(/REQUEST:/);
+    expect(logged).toMatch(/Data:/);
+    // The non-credential fields still appear, so this is not passing because
+    // nothing was logged.
+    expect(logged).toContain('newuser');
+
+    expect(logged).not.toContain(NEW_USER_PASSWORD);
+    expect(logged).not.toContain('sk-live-should-not-appear');
+  });
 });

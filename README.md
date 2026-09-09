@@ -487,9 +487,13 @@ The `execute_sql_query` tool allows you to run read-only SQL queries against you
 - A query that cannot be read unambiguously is rejected rather than guessed at: an unterminated string
   or comment; a backslash-escaped quote inside a literal (whose meaning depends on the server's
   `NO_BACKSLASH_ESCAPES` sql_mode — use `''` to embed a quote instead); a MySQL `/*!` or MariaDB `/*M!`
-  executable comment, whose contents the server actually runs; or a function called by a quoted name
-  (`` `LOAD_FILE`('/etc/passwd') `` resolves to the builtin on both engines, so the quoted form is
-  refused — call functions by their unquoted name)
+  executable comment, whose contents the server actually runs; a NUL byte; or a function called by a
+  quoted name (`` `LOAD_FILE`('/etc/passwd') `` resolves to the builtin on both engines, so the quoted
+  form is refused however it is separated from its parenthesis, comments included — call functions by
+  their unquoted name). One consequence worth knowing before you file it as a bug: a **quoted column
+  list** is refused too, since it is a quoted token before a `(` —
+  ``WITH `cte`(`a`) AS (SELECT 1) …`` and ``SELECT * FROM (SELECT 1) AS `t`(`a`)`` both have to be
+  written without the quotes
 - This tool requires admin-level permissions (`manage_options` capability)
 
 **Set the database privileges. That is the boundary; the checks above are not.** Give the endpoint a
@@ -508,7 +512,10 @@ below repeats them server-side, using the same scanner the client uses.
 **Logging:** nothing is logged unless you set `WORDPRESS_LOG_LEVEL=debug` (the default is `error`).
 Debug output goes to **stderr**, which for a stdio MCP server the host client (Claude Desktop and
 others) captures into its own log files. Credential headers such as `Authorization` and `Cookie` are
-redacted; query text and result rows are not — avoid putting sensitive data in queries.
+redacted, and so are credential-shaped request-body keys (`password`, `token`, `secret`, `api_key`
+and their siblings) — a `create_user` call used to log the new user's password in the clear one line
+below the header bag. Query text, request bodies that are not credential-shaped, and result rows are
+**not** redacted, so avoid putting sensitive data in queries.
 
 **Configuration:** By default, the tool expects the endpoint at `/mcp/v1/query`. You can customize this by setting the `WORDPRESS_SQL_ENDPOINT` environment variable (e.g., `WORDPRESS_SQL_ENDPOINT=/custom/v1/query`).
 
@@ -531,12 +538,21 @@ To enable this feature, add the following code to your WordPress site (via a cus
  *     the server's NO_BACKSLASH_ESCAPES sql_mode (use '' to embed a quote);
  *   - /*! ... *\/ (MySQL) and /*M! ... *\/ (MariaDB) executable comments, whose
  *     contents the server RUNS — they are not comments and cannot be stripped;
- *   - a quoted token immediately followed by `(`, i.e. a function called by a
- *     quoted name. Both engines resolve `LOAD_FILE`('/etc/passwd') exactly as the
- *     bare builtin, so blanking the identifier would erase the keyword you are
- *     looking for.
+ *   - a quoted token followed by `(`, i.e. a function called by a quoted name.
+ *     Both engines resolve `LOAD_FILE`('/etc/passwd') exactly as the bare
+ *     builtin, so blanking the identifier would erase the keyword you are
+ *     looking for. That test runs at the END, on the finished string, where
+ *     comments have already become spaces — checking it inline against the raw
+ *     text would only cover the separators someone thought of, and a comment is
+ *     whitespace to the server.
  */
 function mcp_wp_normalize_sql($query) {
+    // A raw NUL cannot be told apart from the marker used below for a blanked
+    // quoted token, and nothing legitimate sends one.
+    if (strpos($query, "\0") !== false) {
+        return null;
+    }
+
     $out = '';
     $len = strlen($query);
     $i = 0;
@@ -569,12 +585,9 @@ function mcp_wp_normalize_sql($query) {
             if (!$closed) {
                 return null;
             }
-            $after = $i;
-            while ($after < $len && ctype_space($query[$after])) { $after++; }
-            if ($after < $len && $query[$after] === '(') {
-                return null;
-            }
-            $out .= ' ';
+            // Marked rather than blanked, so the quoted-function-name test can
+            // run once at the end over the finished string.
+            $out .= "\0";
             continue;
         }
 
@@ -591,10 +604,11 @@ function mcp_wp_normalize_sql($query) {
             continue;
         }
 
-        // MySQL only starts a `--` comment when whitespace (or end of input)
-        // follows; `a--b` is arithmetic.
+        // MySQL only starts a `--` comment when ASCII whitespace (or end of
+        // input) follows; `a--b` is arithmetic. Anything wider would blank text
+        // the server goes on to execute.
         if ($ch === '-' && $i + 1 < $len && $query[$i + 1] === '-'
-            && ($i + 2 >= $len || ctype_space($query[$i + 2]))) {
+            && ($i + 2 >= $len || preg_match('/[ \t\n\r\f\x0B]/', $query[$i + 2]))) {
             $nl = strpos($query, "\n", $i);
             $i = $nl === false ? $len : $nl;
             $out .= ' ';
@@ -612,7 +626,12 @@ function mcp_wp_normalize_sql($query) {
         $i++;
     }
 
-    return $out;
+    // A quoted token followed by `(` is a function called by a quoted name.
+    if (preg_match('/\x00\s*\(/', $out)) {
+        return null;
+    }
+
+    return str_replace("\0", ' ', $out);
 }
 
 add_action('rest_api_init', function() {
@@ -628,10 +647,16 @@ add_action('rest_api_init', function() {
                 return new WP_Error('unauthorized', 'Unauthorized', array('status' => 401));
             }
 
+            // A JSON body can send anything; without this a `{"query": []}`
+            // is a PHP TypeError and a 500 rather than a 400.
+            if (!is_string($query)) {
+                return new WP_Error('invalid_query', 'query must be a string', array('status' => 400));
+            }
+
             // Read-only statements only. Checked on the raw query, like the
             // client, so a leading comment stays a rejection rather than
             // becoming allowed once comments are blanked below.
-            $trimmed = ltrim($query);
+            $trimmed = ltrim($query, " \t\n\r\0\x0B\f");
             if (stripos($trimmed, 'SELECT') !== 0
                 && stripos($trimmed, 'WITH ') !== 0
                 && stripos($trimmed, 'EXPLAIN ') !== 0) {
@@ -659,7 +684,13 @@ add_action('rest_api_init', function() {
                 return new WP_Error('invalid_query', 'Filesystem access is not allowed', array('status' => 400));
             }
 
-            if (preg_match('/\b(DROP|DELETE|UPDATE|INSERT|TRUNCATE|ALTER|CREATE|GRANT|REVOKE)\b/i', $normalized)) {
+            if (preg_match('/\b(DROP|DELETE|UPDATE|ALTER|CREATE|GRANT|REVOKE)\b/i', $normalized)) {
+                return new WP_Error('invalid_query', 'Only read-only queries are allowed', array('status' => 400));
+            }
+
+            // INSERT() and TRUNCATE() are also ordinary read-only functions, so
+            // these two only count when no `(` follows.
+            if (preg_match('/\b(INSERT|TRUNCATE)\b(?!\s*\()/i', $normalized)) {
                 return new WP_Error('invalid_query', 'Only read-only queries are allowed', array('status' => 400));
             }
 

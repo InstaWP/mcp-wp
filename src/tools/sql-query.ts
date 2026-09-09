@@ -18,12 +18,17 @@ type ExecuteSqlQueryParams = z.infer<typeof executeSqlQuerySchema>;
 // identifier that merely ends in one, so `SELECT last_update FROM ...` was refused
 // as a "dangerous SQL statement". A boundary also catches the keyword at end of
 // input, which the trailing-whitespace form missed.
+//
+// INSERT and TRUNCATE are also the names of ordinary read-only string/numeric
+// functions — `SELECT INSERT('Quadratic',3,4,'What')`, `SELECT TRUNCATE(1.234,2)`
+// — so those two do not fire when a `(` follows. Neither statement form can reach
+// this point anyway: the prefix check has already required SELECT/WITH/EXPLAIN.
 const DANGEROUS_PATTERNS = [
   /\bDROP\b/i,
   /\bDELETE\b/i,
   /\bUPDATE\b/i,
-  /\bINSERT\b/i,
-  /\bTRUNCATE\b/i,
+  /\bINSERT\b(?!\s*\()/i,
+  /\bTRUNCATE\b(?!\s*\()/i,
   /\bALTER\b/i,
   /\bCREATE\b/i,
   /\bGRANT\b/i,
@@ -46,6 +51,18 @@ const FILESYSTEM_PATTERNS: { pattern: RegExp; label: string }[] = [
 ];
 
 const QUOTES = new Set(["'", '"', '`']);
+
+// Stands in for a blanked string literal or quoted identifier while the scan
+// runs, so a quoted token can still be told apart from ordinary whitespace once
+// the whole query has been read. Replaced with a space before returning. A raw
+// NUL in the input would be indistinguishable from it, so such a query is
+// refused outright — nothing legitimate sends one.
+const SENTINEL = '\u0000';
+
+// MySQL starts a `--` comment on ASCII whitespace only. JS's /\s/ also matches
+// U+00A0, U+2028 and U+FEFF, which the server does NOT treat as whitespace — so
+// using it here would blank text the server goes on to execute.
+const SQL_SPACE = /[ \t\n\r\f\v]/;
 
 /**
  * Rewrite a query so it can be pattern-matched safely: every string literal,
@@ -74,6 +91,10 @@ const QUOTES = new Set(["'", '"', '`']);
  *    name exactly as the bare one.
  */
 export function normalizeQuery(query: string): string | null {
+  // A raw NUL could not be told apart from SENTINEL below, and nothing
+  // legitimate sends one.
+  if (query.includes(SENTINEL)) return null;
+
   let out = '';
   let i = 0;
 
@@ -104,20 +125,15 @@ export function normalizeQuery(query: string): string | null {
       }
       if (!closed) return null;
 
-      // A quoted token immediately followed by `(` is a function call, and both
-      // engines resolve a quoted builtin exactly as the bare name: verified on
-      // MariaDB 11.8 and MySQL 8.0.46, SELECT `LOAD_FILE`('/etc/passwd') reads
-      // the file, as does the double-quoted form under ANSI_QUOTES. Blanking it
-      // like an ordinary identifier would hide the keyword from every check
-      // below, so it is refused instead — nothing read-only needs to call a
-      // function by a quoted name. Everywhere else a quoted token is data or an
-      // identifier and is still blanked, which is what keeps
-      // `... WHERE post_title = 'how to drop a table'` legal.
-      let after = i;
-      while (after < query.length && /\s/.test(query[after])) after++;
-      if (query[after] === '(') return null;
-
-      out += ' ';
+      // Emitted as a sentinel rather than a space so the "quoted token used as a
+      // function name" test can run at the END, over the finished string. Doing
+      // it here, as a lookahead over the RAW text, only covers the separators it
+      // is written to know about — and a comment is whitespace to the server, so
+      // `SELECT \`LOAD_FILE\`/**/('/etc/passwd')` read the file on MySQL 8.0.46
+      // and MariaDB 11.8 while normalizing to "SELECT   ( )". By the time the
+      // scan finishes every comment is already a space, so one test at the end
+      // covers every separator instead of the ones someone thought of.
+      out += SENTINEL;
       continue;
     }
 
@@ -137,7 +153,7 @@ export function normalizeQuery(query: string): string | null {
 
     // MySQL only starts a `--` comment when whitespace (or end of input) follows;
     // `a--b` is arithmetic. Matching that keeps us from stripping real code.
-    if (ch === '-' && query[i + 1] === '-' && (query.length === i + 2 || /\s/.test(query[i + 2]))) {
+    if (ch === '-' && query[i + 1] === '-' && (query.length === i + 2 || SQL_SPACE.test(query[i + 2]))) {
       const nl = query.indexOf('\n', i);
       i = nl === -1 ? query.length : nl;
       out += ' ';
@@ -155,7 +171,17 @@ export function normalizeQuery(query: string): string | null {
     i++;
   }
 
-  return out;
+  // A quoted token followed by `(` is a function called by a quoted name, and
+  // both engines resolve it exactly as the bare builtin: verified on MySQL
+  // 8.0.46 and MariaDB 11.8, SELECT `LOAD_FILE`('/etc/passwd') reads the file,
+  // as do the ANSI_QUOTES double-quoted form and every comment-separated variant.
+  // Blanking the token would erase the keyword before any check below saw it, so
+  // it is refused — nothing read-only needs to call a function by a quoted name.
+  // Tested here, at the end, because comments have collapsed to spaces by now:
+  // one test covers every separator rather than the ones anyone thought of.
+  if (new RegExp(`${SENTINEL}\\s*\\(`).test(out)) return null;
+
+  return out.split(SENTINEL).join(' ');
 }
 
 // Tools

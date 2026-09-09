@@ -96,6 +96,27 @@ export function redactHeaders(headers: Record<string, any> | undefined): Record<
   return safe;
 }
 
+// Request-body keys whose value is a credential. `create_user` and `update_user`
+// pass their params straight through, so a `debug` run logged a WordPress user's
+// password in cleartext one line below the header bag this PR redacts — the same
+// exposure, through the other half of the same log statement.
+const REDACTED_KEYS = /^(?:password|pass|pwd|app_password|application_password|token|access_token|refresh_token|secret|client_secret|api_key|apikey|private_key|credential|credentials|authorization|cookie)$/i;
+
+/**
+ * Replace the value of every credential-bearing key with a placeholder, walking
+ * nested objects and arrays. Anything that is not a plain object or array is
+ * returned as-is, so FormData and streams are untouched (they are not logged).
+ */
+export function redactData(value: any, depth = 0): any {
+  if (depth > 6 || value === null || typeof value !== 'object') return value;
+  if (Array.isArray(value)) return value.map((v) => redactData(v, depth + 1));
+  const safe: Record<string, any> = {};
+  for (const [key, v] of Object.entries(value)) {
+    safe[key] = REDACTED_KEYS.test(key) ? '[REDACTED]' : redactData(v, depth + 1);
+  }
+  return safe;
+}
+
 export function logToFile(message: string, level: 'debug' | 'info' | 'error' = 'debug') {
   // Enable logging to stderr (MCP uses stdout for protocol, so we use stderr for logs)
   // Can be disabled by setting DISABLE_LOGGING=true or controlled via LOG_LEVEL
@@ -137,7 +158,7 @@ export async function makeWordPressRequest(
 
   // Log data (skip for FormData which can't be stringified)
   if (!options?.isFormData) {
-    logToFile(`Data: ${JSON.stringify(data, null, 2)}`, 'debug');
+    logToFile(`Data: ${JSON.stringify(redactData(data), null, 2)}`, 'debug');
   } else {
     logToFile('Request contains FormData (not shown in logs)', 'debug');
   }
@@ -173,7 +194,7 @@ URL: ${fullUrl}
 Method: ${method}
 Site: ${options?.siteId || 'default'}
 Headers: ${JSON.stringify(redactHeaders({...client.defaults.headers, ...requestConfig.headers}), null, 2)}
-Data: ${options?.isFormData ? '(FormData not shown)' : JSON.stringify(data, null, 2)}
+Data: ${options?.isFormData ? '(FormData not shown)' : JSON.stringify(redactData(data), null, 2)}
 `;
     logToFile(requestLog, 'debug');
 
