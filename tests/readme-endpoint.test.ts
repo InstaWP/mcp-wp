@@ -14,6 +14,13 @@
 // stubbed, the registered callback is captured and called, and `$wpdb` records
 // whether the query would have run. Nothing here re-implements the endpoint's
 // checks, so deleting one of them in the README fails this test.
+//
+// Two limits worth stating rather than discovering. This is NOT an authorization
+// test: `current_user_can` is stubbed true, because the real gate is the route's
+// `permission_callback`, which WordPress applies before the callback runs. And
+// the corpus is a list of strings, so the non-string cases are driven separately
+// below — without that, the endpoint's `is_string()` guard could be deleted with
+// every assertion here still green.
 import { describe, it, expect, vi, beforeAll, afterAll } from 'vitest';
 import http from 'node:http';
 import fs from 'node:fs';
@@ -116,6 +123,19 @@ foreach (array_merge($corpus['must_reject'], $corpus['must_allow']) as $query) {
         'ran' => $GLOBALS['wpdb']->ran !== null,
     );
 }
+
+// A JSON body can send anything. Not expressible in the corpus, which is a list
+// of strings, so it is driven separately — without it the endpoint's is_string()
+// guard could be deleted with every test still green.
+foreach (array('__non_string__' => array(), '__null__' => null) as $label => $payload) {
+    $GLOBALS['wpdb']->ran = null;
+    $result = $callback(new MCP_WP_Request(array('query' => $payload)));
+    $out[$label] = array(
+        'verdict' => ($result instanceof WP_Error) ? 'REJECT' : 'ALLOW',
+        'ran' => $GLOBALS['wpdb']->ran !== null,
+    );
+}
+
 echo json_encode($out);
 `;
 
@@ -168,8 +188,14 @@ describe('the README WordPress endpoint agrees with the client', () => {
     }
 
     // The harness reached the endpoint at all.
-    expect(Object.keys(endpoint).length).toBe(corpus.must_reject.length + corpus.must_allow.length);
+    expect(Object.keys(endpoint).length).toBe(corpus.must_reject.length + corpus.must_allow.length + 2);
     expect(Object.values(endpoint).some((r) => r.ran)).toBe(true);
+
+    // Not expressible in the corpus (a list of strings), so asserted directly.
+    for (const label of ['__non_string__', '__null__']) {
+      expect(endpoint[label].verdict, `endpoint on a non-string query (${label})`).toBe('REJECT');
+      expect(endpoint[label].ran).toBe(false);
+    }
 
     for (const [expected, payloads] of [['REJECT', corpus.must_reject], ['ALLOW', corpus.must_allow]] as const) {
       for (const query of payloads) {

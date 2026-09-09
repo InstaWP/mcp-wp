@@ -35,7 +35,13 @@
     "SELECT `LOAD_FILE`--\u001f\n('/etc/passwd')",
     "SELECT `LOAD_FILE`--\u007f\n('/etc/passwd')",
     "SELECT 1 --\u0001\n INTO OUTFILE '/tmp/x'",
-    "REPLACE wp_posts SET ID = 1"
+    "REPLACE wp_posts SET ID = 1",
+    "FLUSH PRIVILEGES",
+    "CALL some_procedure()",
+    "SHOW GRANTS FOR CURRENT_USER",
+    "SELECT 1 UNION REPLACE wp_posts SET ID = 1",
+    "SELECT 1 UNION INSERT wp_posts SET ID = 1",
+    "SELECT 'a\\'b' AS x"
   ],
   "must_allow": [
     "SELECT * FROM wp_posts WHERE post_type = 'post' LIMIT 10",
@@ -52,6 +58,7 @@
     "WITH x AS (SELECT 1 AS n) SELECT n FROM x",
     "EXPLAIN SELECT * FROM wp_posts",
     "SELECT REPLACE(post_title, 'a', 'b') FROM wp_posts LIMIT 1",
-    "SELECT 1--2 AS a"
+    "SELECT 1--2 AS a",
+    "SELECT author_name FROM wp_comments LIMIT 1"
   ]
 }

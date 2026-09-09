@@ -500,14 +500,19 @@ The `execute_sql_query` tool allows you to run read-only SQL queries against you
 MySQL/MariaDB user with `SELECT` only and **no `FILE` privilege** (or set `secure_file_priv`), so a
 query that gets past a pattern has nothing left to reach. The checks are a guard against a model —
 including one under prompt injection — issuing something the tool description promised it would not;
-they are pattern matching over SQL text, and pattern matching over SQL text is not a parser. Two known
-gaps are left open on purpose: a `SELECT` can still be expensive or lock-taking (`SLEEP()`,
-`BENCHMARK()`, `GET_LOCK()`, `FOR UPDATE`), and neither the client nor the endpoint limits how long a
-query runs.
+they are pattern matching over SQL text, and pattern matching over SQL text is not a parser. Known gaps
+left open on purpose: a `SELECT` can still be expensive (`SLEEP()`, `BENCHMARK()`, `GET_LOCK()`), and
+neither the client nor the endpoint limits how long a query runs. (`FOR UPDATE` is refused, as a side
+effect of the `UPDATE` keyword rule.)
 
 **And the client's checks are not a boundary at all**, because anything holding the credentials can
-call the REST endpoint directly. The endpoint must therefore enforce its own limits — the example
-below repeats them server-side, using the same scanner the client uses.
+call the REST endpoint directly. The endpoint must therefore enforce its own limits — the example below
+repeats them server-side, using the same scanner. The two are kept in step by a test that extracts the
+PHP from this file and drives both over one shared corpus, so a fix applied to only one of them fails
+CI. They are deliberately not byte-identical in one place: `$wpdb` connects with `DB_CHARSET`, and
+MySQL's "whitespace or control character" is charset-dependent (latin1 adds `0xA0`, cp850 `0xFF`), so
+the PHP matches the union of those sets. The client cannot produce those bytes at all — it emits UTF-8,
+where they are a syntax error.
 
 **Logging:** nothing is logged unless you set `WORDPRESS_LOG_LEVEL=debug` (the default is `error`).
 Debug output goes to **stderr**, which for a stdio MCP server the host client (Claude Desktop and
@@ -605,12 +610,17 @@ function mcp_wp_normalize_sql($query) {
         }
 
         // The server starts a `--` comment on whitespace OR a control character
-        // (`my_isspace || my_iscntrl`), i.e. every byte through 0x20 plus DEL;
-        // `a--b` is arithmetic. This set has to equal the server's exactly —
-        // wider blanks text the server executes, narrower keeps text the server
-        // drops and so pushes apart the tokens the check below compares.
+        // (`my_isspace || my_iscntrl`); `a--b` is arithmetic. Those two are
+        // charset-dependent, not ASCII: under utf8/utf8mb4 the set is every byte
+        // through 0x20 plus 0x7F, but latin1 adds 0xA0 and cp850 adds 0xFF — and
+        // $wpdb opens the connection with DB_CHARSET, which is not always utf8.
+        // The union is used because it is the safe direction *here*: every extra
+        // byte is either a comment starter on that charset or an invalid byte the
+        // server rejects, so nothing executable is blanked either way. (The
+        // client cannot send these at all — it emits UTF-8, where 0xA0 is C2 A0
+        // and a syntax error.)
         if ($ch === '-' && $i + 1 < $len && $query[$i + 1] === '-'
-            && ($i + 2 >= $len || preg_match('/[\x00-\x20\x7F]/', $query[$i + 2]))) {
+            && ($i + 2 >= $len || preg_match('/[\x00-\x20\x7F\xA0\xFF]/', $query[$i + 2]))) {
             $nl = strpos($query, "\n", $i);
             $i = $nl === false ? $len : $nl;
             $out .= ' ';
@@ -629,7 +639,10 @@ function mcp_wp_normalize_sql($query) {
     }
 
     // A quoted token followed by `(` is a function called by a quoted name.
-    if (preg_match('/\x00\s*\(/', $out)) {
+    // PCRE's \s is ASCII-only, so the bytes the server also accepts as a token
+    // separator on a non-utf8 connection are added explicitly. Widening here only
+    // ever rejects more, so there is no downside.
+    if (preg_match('/\x00[\s\xA0\xFF]*\(/', $out)) {
         return null;
     }
 

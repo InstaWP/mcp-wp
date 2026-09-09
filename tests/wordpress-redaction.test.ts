@@ -92,6 +92,13 @@ describe('redactHeaders', () => {
   it('tolerates undefined', () => {
     expect(redactHeaders(undefined)).toEqual({});
   });
+
+  it('terminates on a cyclic bag instead of blowing the stack', () => {
+    const bag: any = { Authorization: 'Basic x' };
+    bag.common = bag;
+    expect(() => redactHeaders(bag)).not.toThrow();
+    expect(redactHeaders(bag).Authorization).toBe('[REDACTED]');
+  });
 });
 
 describe('debug logging never emits the application password', () => {
@@ -169,6 +176,25 @@ describe('debug logging never emits the application password', () => {
     for (const secret of ['LEAK-user-pass', 'LEAK-smtp', 'LEAK-apikey', 'LEAK-token']) {
       expect(logged, secret).not.toContain(secret);
     }
+  });
+
+  it('still shows the author fields, which a substring match on "auth" would eat', async () => {
+    // author, author_email, author_name, author_url and author_exclude are
+    // declared params on the content and comment tools. Redacting them blinds the
+    // log for the debugging it exists to serve.
+    await makeWordPressRequest('POST', 'comments', {
+      author: 7,
+      author_name: 'Ada Lovelace',
+      author_email: 'ada@example.com',
+      author_url: 'https://example.com/ada',
+      authorization: 'Bearer LEAK-bearer'
+    });
+
+    const logged = stderr.join('');
+    expect(logged).toContain('Ada Lovelace');
+    expect(logged).toContain('ada@example.com');
+    expect(logged).toContain('https://example.com/ada');
+    expect(logged).not.toContain('LEAK-bearer');
   });
 
   it('does not leak a credential past the recursion cap, and leaves non-plain values readable', async () => {

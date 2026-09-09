@@ -82,13 +82,16 @@ const REDACTED_HEADERS = new Set([
  * carries per-method sub-objects (`common`, `post`, …), and a header set there
  * would otherwise be logged verbatim inside its parent.
  */
-export function redactHeaders(headers: Record<string, any> | undefined): Record<string, any> {
+export function redactHeaders(headers: Record<string, any> | undefined, depth = 0): Record<string, any> {
+  // Bounded for the same reason redactData is: a cyclic bag would otherwise
+  // recurse until the stack gives out.
+  if (depth > 6) return {};
   const safe: Record<string, any> = {};
   for (const [name, value] of Object.entries(headers || {})) {
     if (REDACTED_HEADERS.has(name.toLowerCase())) {
       safe[name] = '[REDACTED]';
     } else if (value && typeof value === 'object' && !Array.isArray(value)) {
-      safe[name] = redactHeaders(value as Record<string, any>);
+      safe[name] = redactHeaders(value as Record<string, any>, depth + 1);
     } else {
       safe[name] = value;
     }
@@ -105,7 +108,14 @@ export function redactHeaders(headers: Record<string, any> | undefined): Record<
 // `user_pass` is WordPress's own column, and `update_content` forwards arbitrary
 // `meta`/`custom_fields` straight into the logged body, where a plugin's
 // `smtp_password` is an ordinary key. Over-redacting a debug log costs nothing.
-const REDACTED_KEYS = /(pass|pwd|secret|token|api[_-]?key|private[_-]?key|credential|auth|cookie|signature)/i;
+const REDACTED_KEYS =
+  /(pass|pwd|secret|token|nonce|jwt|bearer|credential|cookie|signature|auth|(?:api|access|private|consumer|license|encryption)[_-]?key)/i;
+
+// `auth` as a substring also catches WordPress's author fields, which are
+// declared parameters on the content and comment tools — redacting those blinds
+// the log for exactly the debugging it exists to serve. Listed explicitly rather
+// than carved out of the pattern, so that `authorization` keeps matching.
+const NEVER_REDACTED_KEYS = /^author(_(name|email|url|exclude|ip|user_agent))?$/i;
 
 /**
  * Replace the value of every credential-bearing key with a placeholder, walking
@@ -131,7 +141,8 @@ export function redactData(value: any, depth = 0): any {
 
   const safe: Record<string, any> = {};
   for (const [key, v] of Object.entries(value)) {
-    safe[key] = REDACTED_KEYS.test(key) ? '[REDACTED]' : redactData(v, depth + 1);
+    const redact = REDACTED_KEYS.test(key) && !NEVER_REDACTED_KEYS.test(key);
+    safe[key] = redact ? '[REDACTED]' : redactData(v, depth + 1);
   }
   return safe;
 }
