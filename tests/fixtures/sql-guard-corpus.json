@@ -59,6 +59,7 @@
     "EXPLAIN SELECT * FROM wp_posts",
     "SELECT REPLACE(post_title, 'a', 'b') FROM wp_posts LIMIT 1",
     "SELECT 1--2 AS a",
-    "SELECT author_name FROM wp_comments LIMIT 1"
+    "SELECT author_name FROM wp_comments LIMIT 1",
+    "SELECT `post_title`, CONCAT('a','b') FROM wp_posts LIMIT 1"
   ]
 }
