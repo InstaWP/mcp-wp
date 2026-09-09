@@ -20,10 +20,17 @@ jobs:
         with:
           node-version: ${{ matrix.node-version }}
 
+      # `npm ci` installs exactly what package-lock.json pins. `npm install`
+      # re-resolved every range against the live registry on each run, so an
+      # upstream publish could break CI on a commit that had not changed: on
+      # 2026-09-04 a newly published peer in vitest's optional `@vitejs/devtools`
+      # chain crashed npm 10.9.8's peer resolver ("Cannot read properties of null
+      # (reading 'edgesOut')") and reddened every PR on Node 22 for five days.
+      #
       # --ignore-scripts skips the `prepare` hook (which runs `npm run build`).
       # Vitest uses esbuild and does not require a prior `tsc` build.
       - name: Install dependencies
-        run: npm install --ignore-scripts
+        run: npm ci --ignore-scripts
 
       - name: Run tests
         run: npm test

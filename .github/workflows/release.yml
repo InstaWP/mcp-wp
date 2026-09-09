@@ -41,9 +41,13 @@ jobs:
           node-version: '22.x'
           registry-url: 'https://registry.npmjs.org'
 
+      # `npm ci` installs exactly what package-lock.json pins, so a release is
+      # built from the same tree that CI tested rather than from whatever the
+      # registry resolves at publish time. See the note in test.yml.
+      #
       # --ignore-scripts skips the `prepare` hook; the build runs explicitly below.
       - name: Install dependencies
-        run: npm install --ignore-scripts
+        run: npm ci --ignore-scripts
 
       - name: Resolve and verify version
         id: v
