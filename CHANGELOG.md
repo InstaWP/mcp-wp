@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.1] - 2026-09-09
+
 ### Security
 - **`execute_sql_query`'s read-only gate no longer lets a SELECT reach the filesystem.** `INTO OUTFILE`,
   `INTO DUMPFILE` and `LOAD_FILE()` are valid SELECT syntax and matched none of the old checks (a
