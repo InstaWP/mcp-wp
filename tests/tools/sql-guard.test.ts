@@ -179,6 +179,22 @@ describe('execute_sql_query rejects queries it cannot read unambiguously', () =>
     expect(requestsReceived).toBe(0);
   });
 
+  it('rejects `--` followed by a high byte rather than guessing whether it is a comment', async () => {
+    // At or above 0x80 the answer depends on character_set_client, and MySQL and
+    // MariaDB disagree with each other. Guessing is unsafe both ways: called a
+    // comment, the first payload's tail is blanked and the file write is invisible
+    // (`SELECT 1 `); called code, the second keeps text the server drops, which
+    // pushes the quoted name away from its `(` and defeats the adjacency check.
+    for (const code of [0xa0, 0xff]) {
+      const sep = String.fromCharCode(code);
+      const blanked = `SELECT 1--${sep} FROM (SELECT 1 AS x) t INTO OUTFILE '/tmp/pwn'`;
+      const kept = `SELECT \`LOAD_FILE\`--${sep}\n('/etc/passwd')`;
+      expect((await run(blanked)).isError, `blanked 0x${code.toString(16)}`).toBe(true);
+      expect((await run(kept)).isError, `kept 0x${code.toString(16)}`).toBe(true);
+    }
+    expect(requestsReceived).toBe(0);
+  });
+
   it('rejects a query containing a NUL byte', async () => {
     // Indistinguishable from the marker normalizeQuery uses internally.
     const { isError } = await run('SELECT 1 \u0000');

@@ -610,17 +610,30 @@ function mcp_wp_normalize_sql($query) {
         }
 
         // The server starts a `--` comment on whitespace OR a control character
-        // (`my_isspace || my_iscntrl`); `a--b` is arithmetic. Those two are
-        // charset-dependent, not ASCII: under utf8/utf8mb4 the set is every byte
-        // through 0x20 plus 0x7F, but latin1 adds 0xA0 and cp850 adds 0xFF — and
-        // $wpdb opens the connection with DB_CHARSET, which is not always utf8.
-        // The union is used because it is the safe direction *here*: every extra
-        // byte is either a comment starter on that charset or an invalid byte the
-        // server rejects, so nothing executable is blanked either way. (The
-        // client cannot send these at all — it emits UTF-8, where 0xA0 is C2 A0
-        // and a syntax error.)
+        // (`my_isspace || my_iscntrl`); `a--b` is arithmetic. Below 0x80 that is
+        // fixed, and it is `[\x00-\x20\x7F]`.
+        //
+        // At or above 0x80 it is decided by character_set_client — which $wpdb
+        // takes from DB_CHARSET — and the two engines do not even agree with each
+        // other. The same byte can be a comment starter, an ordinary identifier
+        // character, or an error, depending on both. Neither answer is safe to
+        // guess: treat it as a comment and `SELECT 1--<0xA0> ... INTO OUTFILE` has
+        // its whole tail blanked while the server runs it; treat it as code and
+        // `\`LOAD_FILE\`--<0xA0>\n(...)` keeps text the server drops, which pushes
+        // the quoted name away from its `(` and defeats the check below. Both were
+        // measured, in both directions.
+        //
+        // So it is refused, like every other construct here that cannot be read
+        // unambiguously. Nothing legitimate puts a high byte straight after `--`.
+        $next = $i + 2 < $len ? $query[$i + 2] : '';
+
         if ($ch === '-' && $i + 1 < $len && $query[$i + 1] === '-'
-            && ($i + 2 >= $len || preg_match('/[\x00-\x20\x7F\xA0\xFF]/', $query[$i + 2]))) {
+            && $next !== '' && preg_match('/[\x80-\xFF]/', $next)) {
+            return null;
+        }
+
+        if ($ch === '-' && $i + 1 < $len && $query[$i + 1] === '-'
+            && ($next === '' || preg_match('/[\x00-\x20\x7F]/', $next))) {
             $nl = strpos($query, "\n", $i);
             $i = $nl === false ? $len : $nl;
             $out .= ' ';
@@ -639,9 +652,9 @@ function mcp_wp_normalize_sql($query) {
     }
 
     // A quoted token followed by `(` is a function called by a quoted name.
-    // PCRE's \s is ASCII-only, so the bytes the server also accepts as a token
-    // separator on a non-utf8 connection are added explicitly. Widening here only
-    // ever rejects more, so there is no downside.
+    // PCRE's \s is ASCII-only, so the high bytes some charsets also accept as a
+    // token separator are added explicitly. Widening *here* only ever rejects
+    // more, so unlike the `--` class above it has no downside.
     if (preg_match('/\x00[\s\xA0\xFF]*\(/', $out)) {
         return null;
     }

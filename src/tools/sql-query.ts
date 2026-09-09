@@ -63,17 +63,22 @@ const QUOTES = new Set(["'", '"', '`']);
 // refused outright — nothing legitimate sends one.
 const SENTINEL = '\u0000';
 
-// What the server accepts after `--` to start a comment. The lexer's test is
-// `my_isspace(...) || my_iscntrl(...)`, i.e. every byte through 0x20 plus DEL —
-// the manual's "whitespace or control character".
+// What the server accepts after `--` to start a comment, for everything below
+// 0x80. The lexer's test is `my_isspace(...) || my_iscntrl(...)`, i.e. every byte
+// through 0x20 plus DEL — the manual's "whitespace or control character". At or
+// above 0x80 the answer is charset- and engine-dependent and is refused outright
+// rather than classified; see the `--` branch in normalizeQuery.
 //
-// This set has to equal the server's exactly, and it is not obvious which way is
-// safe, because it is wrong in both directions. Too WIDE and text the server
-// executes gets blanked. Too NARROW and text the server drops is kept, which
-// pushes the tokens either side apart: `\`LOAD_FILE\`--<0x01>\n(...)` left the
-// un-stripped comment sitting between the quoted name and its `(`, so the
-// adjacency test below did not fire and the identifier had already been blanked.
-// Verified on MySQL 8.0.46 and MariaDB 11.8: that payload reads the file.
+// This set has to equal the server's exactly, and it is wrong in BOTH directions,
+// which is why neither "be generous" nor "be strict" is the rule here:
+//   too WIDE  — text the server executes gets blanked, so
+//               `SELECT 1--<0xA0> ... INTO OUTFILE '...'` normalizes to
+//               `SELECT 1 ` and every check below sees nothing;
+//   too NARROW — text the server drops is kept, pushing the tokens either side
+//               apart, so `\`LOAD_FILE\`--<0x01>\n(...)` left the comment sitting
+//               between the quoted name and its `(` and the adjacency test never
+//               fired, on an identifier that had already been blanked.
+// Both were measured, on MySQL 8.0.46 and MariaDB 11.8.8.
 //
 // JS's /\s/ is the too-wide end of that (U+00A0, U+2028, U+FEFF), which is why
 // it is not used here.
@@ -165,6 +170,16 @@ export function normalizeQuery(query: string): string | null {
       out += ' ';
       continue;
     }
+
+    // Whether `--<char>` starts a comment is fixed below 0x80 and decided by
+    // character_set_client at or above it — where the two engines do not even
+    // agree with each other, and the same byte can be a comment starter, an
+    // ordinary identifier character or an error. Guessing is unsafe in both
+    // directions (see SQL_SPACE), so it is refused like every other construct
+    // that cannot be read unambiguously. The client emits UTF-8 and could not
+    // produce a lone high byte anyway; the rule is stated here so that both this
+    // and the endpoint in README.md say the same thing.
+    if (ch === '-' && query[i + 1] === '-' && query.charCodeAt(i + 2) >= 0x80) return null;
 
     // MySQL only starts a `--` comment when whitespace (or end of input) follows;
     // `a--b` is arithmetic. Matching that keeps us from stripping real code.

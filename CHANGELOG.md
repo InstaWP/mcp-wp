@@ -27,7 +27,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   its `(` — including by a comment, and including a `--` comment started by a **control character**,
   which both servers accept (`my_isspace || my_iscntrl`) and no whitespace class covers. The `--`
   comment rule is therefore matched as `[\x00-\x20\x7f]`: too wide blanks text the server executes, and
-  too narrow leaves text the server drops sitting between the tokens being compared. The example WordPress
+  too narrow leaves text the server drops sitting between the tokens being compared. Above `0x7f` that
+  rule is decided by `character_set_client`, and MySQL and MariaDB disagree with each other, so a high
+  byte straight after `--` is **refused** rather than classified — guessing is a bypass either way.
+  The example WordPress
   endpoint in `README.md` now repeats these checks server-side using the same scanner, since the
   client's validation is not a boundary — its previous regex-based normalizer stripped comments before
   string literals, which made `SELECT '#' INTO OUTFILE '/tmp/x'` read as harmless.

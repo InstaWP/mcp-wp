@@ -127,6 +127,27 @@ foreach (array_merge($corpus['must_reject'], $corpus['must_allow']) as $query) {
 // A JSON body can send anything. Not expressible in the corpus, which is a list
 // of strings, so it is driven separately — without it the endpoint's is_string()
 // guard could be deleted with every test still green.
+// Raw high bytes cannot be written into the corpus either: it is UTF-8 JSON, so
+// a "\\u00a0" entry reaches PHP as C2 A0, which is a different string. Whether a
+// high byte after a double dash starts a comment is charset- and engine-dependent,
+// so it is refused; both directions of getting that wrong are bypasses.
+$high = array();
+foreach (array(0xA0, 0xFF) as $byte) {
+    $c = chr($byte);
+    $high['__blanked_' . dechex($byte) . '__'] =
+        "SELECT 1--$c FROM (SELECT 1 AS x) t INTO OUTFILE '/tmp/pwn'";
+    $high['__kept_' . dechex($byte) . '__'] =
+        "SELECT \`LOAD_FILE\`--$c\n('/etc/passwd')";
+}
+foreach ($high as $label => $payload) {
+    $GLOBALS['wpdb']->ran = null;
+    $result = $callback(new MCP_WP_Request(array('query' => $payload)));
+    $out[$label] = array(
+        'verdict' => ($result instanceof WP_Error) ? 'REJECT' : 'ALLOW',
+        'ran' => $GLOBALS['wpdb']->ran !== null,
+    );
+}
+
 foreach (array('__non_string__' => array(), '__null__' => null) as $label => $payload) {
     $GLOBALS['wpdb']->ran = null;
     $result = $callback(new MCP_WP_Request(array('query' => $payload)));
@@ -188,13 +209,15 @@ describe('the README WordPress endpoint agrees with the client', () => {
     }
 
     // The harness reached the endpoint at all.
-    expect(Object.keys(endpoint).length).toBe(corpus.must_reject.length + corpus.must_allow.length + 2);
+    const extra = ['__blanked_a0__', '__kept_a0__', '__blanked_ff__', '__kept_ff__', '__non_string__', '__null__'];
+    expect(Object.keys(endpoint).length).toBe(corpus.must_reject.length + corpus.must_allow.length + extra.length);
     expect(Object.values(endpoint).some((r) => r.ran)).toBe(true);
 
-    // Not expressible in the corpus (a list of strings), so asserted directly.
-    for (const label of ['__non_string__', '__null__']) {
-      expect(endpoint[label].verdict, `endpoint on a non-string query (${label})`).toBe('REJECT');
-      expect(endpoint[label].ran).toBe(false);
+    // Not expressible in the corpus — it is a UTF-8 JSON list of strings, so it
+    // can hold neither a non-string nor a lone high byte. Asserted directly.
+    for (const label of extra) {
+      expect(endpoint[label].verdict, `endpoint on ${label}`).toBe('REJECT');
+      expect(endpoint[label].ran, `endpoint queried anyway on ${label}`).toBe(false);
     }
 
     for (const [expected, payloads] of [['REJECT', corpus.must_reject], ['ALLOW', corpus.must_allow]] as const) {
