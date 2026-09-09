@@ -79,7 +79,7 @@ The app password can be generated from WordPress admin panel following the [Appl
    - Integrates with SiteManager for multi-site support
    - Handles authentication using Basic Auth with application passwords
    - Provides `makeWordPressRequest()` wrapper for all API calls with optional `siteId` parameter
-   - Includes logging to `logs/wordpress-api.log` for debugging
+   - Logs to stderr via `logToFile()`, gated by `WORDPRESS_LOG_LEVEL` (default `error`); credential headers are redacted by `redactHeaders()`
    - Special handler `searchWordPressPluginRepository()` for WordPress.org plugin search
 
 4. **Tool System (`src/tools/`)**: 
@@ -268,7 +268,7 @@ The server integrates with Claude Desktop via the configuration in `claude_deskt
 ## Error Handling
 
 - All API requests are wrapped in try-catch blocks
-- Errors are logged to `logs/wordpress-api.log` with full request/response details
+- Errors are logged to stderr with full request/response details (`WORDPRESS_LOG_LEVEL`, default `error`); credential headers such as `Authorization` and `Cookie` are redacted
 - Process signals (SIGTERM, SIGINT) are handled gracefully
 - Uncaught exceptions and rejections trigger proper shutdown
 

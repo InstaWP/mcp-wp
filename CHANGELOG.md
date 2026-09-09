@@ -5,6 +5,71 @@ All notable changes to `@instawp/mcp-wp` are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Security
+- **`execute_sql_query`'s read-only gate no longer lets a SELECT reach the filesystem.** `INTO OUTFILE`,
+  `INTO DUMPFILE` and `LOAD_FILE()` are valid SELECT syntax and matched none of the old checks (a
+  `startsWith('SELECT')` prefix test, a multi-statement test, and a fixed DDL/DML blocklist), so
+  `SELECT LOAD_FILE('/etc/passwd')` and `SELECT '<?php … ?>' INTO DUMPFILE '…/uploads/pwn.php'` both
+  passed validation while the tool description promised "only SELECT queries are allowed". All three
+  are now rejected. Every check also runs against a *normalized* query — string literals, quoted
+  identifiers and comments collapsed to whitespace — so a keyword hidden inside a literal is no longer
+  a false positive (`SELECT … WHERE title = 'how to drop a table'` used to be refused) and one split
+  by a comment is not a bypass. A query that cannot be read unambiguously is rejected rather than
+  guessed at: an unterminated string or comment; a backslash-escaped quote inside a literal (its
+  meaning depends on the server's `NO_BACKSLASH_ESCAPES` sql_mode); a `/*!` MySQL **or `/*M!` MariaDB**
+  executable comment, whose contents the server runs; or **a function called by a quoted name** —
+  ``SELECT `LOAD_FILE`('/etc/passwd')`` and its `ANSI_QUOTES` double-quoted form resolve to the builtin
+  on both engines (verified on MariaDB 11.8 and MySQL 8.0.46), so blanking the identifier the way an
+  identifier is blanked would have erased the keyword before any check saw it. That test runs on the
+  finished normalized query rather than on the raw text, so it holds however the name is separated from
+  its `(` — including by a comment, and including a `--` comment started by a **control character**,
+  which both servers accept (`my_isspace || my_iscntrl`) and no whitespace class covers. The `--`
+  comment rule is therefore matched as `[\x00-\x20\x7f]`: too wide blanks text the server executes, and
+  too narrow leaves text the server drops sitting between the tokens being compared. Above `0x7f` that
+  rule is decided by `character_set_client`, and MySQL and MariaDB disagree with each other, so a high
+  byte straight after `--` is **refused** rather than classified — guessing is a bypass either way. The
+  separator between a quoted name and its `(` is a different class and is widened instead, since
+  widening there can only reject more. The example WordPress
+  endpoint in `README.md` now repeats these checks server-side using the same scanner, since the
+  client's validation is not a boundary — its previous regex-based normalizer stripped comments before
+  string literals, which made `SELECT '#' INTO OUTFILE '/tmp/x'` read as harmless.
+- **Credential-shaped request-body keys are redacted from debug logging too.** The `Data:` line one
+  below the header bag logged the request body verbatim, and `create_user`/`update_user` pass their
+  params straight through — so a `debug` run put a WordPress user's `password` in the clear in the same
+  stderr stream. `password`, `token`, `secret`, `api_key` and their siblings now log as `[REDACTED]`,
+  nested objects and arrays included. Query text and result rows are still not redacted; that is
+  documented rather than changed.
+- **Credential headers are redacted from debug logging.** `Authorization: Basic base64(user:app-password)`
+  was logged verbatim at `debug` level, and base64 is reversible — so `WORDPRESS_LOG_LEVEL=debug` put
+  the WordPress application password in the clear. Despite its name `logToFile` writes to stderr, which
+  for a stdio MCP server the host client captures into its own log files. `Authorization`, `Cookie` and
+  their siblings now log as `[REDACTED]`.
+
+Both reported privately by Syed Anas Mohiuddin.
+
+### Fixed
+- **`execute_sql_query` no longer refuses an identifier that merely ends in a DDL keyword.** The
+  blocklist matched `UPDATE\s+` rather than the whole word, so `SELECT last_update FROM …` came back as
+  "potentially dangerous SQL statement". It now matches on word boundaries, which also catches a
+  keyword at the very end of a query — something the trailing-whitespace form missed. `INSERT`,
+  `TRUNCATE` and `REPLACE` are exempted when a `(` follows, because all three are also ordinary
+  read-only functions (`SELECT INSERT('Quadratic',3,4,'What')`, `SELECT TRUNCATE(1.234,2)`,
+  `SELECT REPLACE(a,'x','y')`); no statement form can reach that check anyway, since the query must
+  already start with SELECT/WITH/EXPLAIN. `REPLACE` is new to the list — `REPLACE tbl SET …` needs no
+  `INTO`, so nothing else there would have caught it.
+- **The `README.md` endpoint accepts `WITH …` and `EXPLAIN …`**, which the client allows and the
+  example rejected with a 400, and returns a 400 rather than a PHP error when `query` is not a string.
+- **`README.md` no longer claims queries are logged to `logs/wordpress-api.log`.** No such file is
+  written: logging goes to stderr, only when `WORDPRESS_LOG_LEVEL=debug` is set (the default is
+  `error`). Same correction in `CLAUDE.md`.
+
+### Added
+- **`SECURITY.md`** — a private disclosure route (GitHub private vulnerability reporting, plus
+  `support@instawp.com`), response targets, and scope. The reporter above had to find us through the
+  support desk because the repository named no security contact.
+
 ## [0.2.0] - 2026-08-19
 
 ### Added

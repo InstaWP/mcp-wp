@@ -481,14 +481,189 @@ The `execute_sql_query` tool allows you to run read-only SQL queries against you
 - This tool only accepts read-only queries (SELECT, WITH...SELECT, EXPLAIN) for safety
 - Queries containing INSERT, UPDATE, DELETE, DROP, or other modifying statements will be rejected
 - Multi-statement queries are blocked to prevent SQL injection
-- Queries and results are logged to `logs/wordpress-api.log` - avoid including sensitive data in queries
+- SELECT syntax that reaches the **filesystem of the database host** — `INTO OUTFILE`, `INTO DUMPFILE`,
+  `LOAD_FILE()` — is rejected. These are valid inside a SELECT, so a "starts with SELECT" check alone
+  does not stop an arbitrary file read, or a webshell being written into `wp-content/uploads`
+- A query that cannot be read unambiguously is rejected rather than guessed at: an unterminated string
+  or comment; a backslash-escaped quote inside a literal (whose meaning depends on the server's
+  `NO_BACKSLASH_ESCAPES` sql_mode — use `''` to embed a quote instead); a MySQL `/*!` or MariaDB `/*M!`
+  executable comment, whose contents the server actually runs; a NUL byte; or a function called by a
+  quoted name (`` `LOAD_FILE`('/etc/passwd') `` resolves to the builtin on both engines, so the quoted
+  form is refused however it is separated from its parenthesis, comments included — call functions by
+  their unquoted name). One consequence worth knowing before you file it as a bug: a **quoted column
+  list** is refused too, since it is a quoted token before a `(` —
+  ``WITH `cte`(`a`) AS (SELECT 1) …`` and ``SELECT * FROM (SELECT 1) AS `t`(`a`)`` both have to be
+  written without the quotes
 - This tool requires admin-level permissions (`manage_options` capability)
+
+**Set the database privileges. That is the boundary; the checks above are not.** Give the endpoint a
+MySQL/MariaDB user with `SELECT` only and **no `FILE` privilege** (or set `secure_file_priv`), so a
+query that gets past a pattern has nothing left to reach. The checks are a guard against a model —
+including one under prompt injection — issuing something the tool description promised it would not;
+they are pattern matching over SQL text, and pattern matching over SQL text is not a parser. Known gaps
+left open on purpose: a `SELECT` can still be expensive (`SLEEP()`, `BENCHMARK()`, `GET_LOCK()`), and
+neither the client nor the endpoint limits how long a query runs. (`FOR UPDATE` is refused, as a side
+effect of the `UPDATE` keyword rule.)
+
+**And the client's checks are not a boundary at all**, because anything holding the credentials can
+call the REST endpoint directly. The endpoint must therefore enforce its own limits — the example below
+repeats them server-side, using the same scanner. The two are kept in step by a test that extracts the
+PHP from this file and drives both over one shared corpus, so a fix applied to only one of them fails
+CI. They are deliberately not byte-identical in one place: `$wpdb` connects with `DB_CHARSET`, and
+MySQL's "whitespace or control character" is charset-dependent (latin1 adds `0xA0`, cp850 `0xFF`), so
+the PHP matches the union of those sets. The client cannot produce those bytes at all — it emits UTF-8,
+where they are a syntax error.
+
+**Logging:** nothing is logged unless you set `WORDPRESS_LOG_LEVEL=debug` (the default is `error`).
+Debug output goes to **stderr**, which for a stdio MCP server the host client (Claude Desktop and
+others) captures into its own log files. Credential headers such as `Authorization` and `Cookie` are
+redacted, and so are credential-shaped request-body keys (`password`, `token`, `secret`, `api_key`
+and their siblings) — a `create_user` call used to log the new user's password in the clear one line
+below the header bag. Query text, request bodies that are not credential-shaped, and result rows are
+**not** redacted, so avoid putting sensitive data in queries.
 
 **Configuration:** By default, the tool expects the endpoint at `/mcp/v1/query`. You can customize this by setting the `WORDPRESS_SQL_ENDPOINT` environment variable (e.g., `WORDPRESS_SQL_ENDPOINT=/custom/v1/query`).
 
 To enable this feature, add the following code to your WordPress site (via a custom plugin or your theme's `functions.php`):
 
 ```php
+/**
+ * Blank every string literal, quoted identifier and comment, or return null when
+ * the query cannot be read unambiguously.
+ *
+ * A scanner rather than a list of regexes, because the order regexes run in is
+ * itself a bypass: strip comments first and `SELECT '#' INTO OUTFILE '/x'` has
+ * everything from the `#` onwards removed, so the INTO disappears from the text
+ * you check while the server still runs it.
+ *
+ * This mirrors normalizeQuery() in the client's src/tools/sql-query.ts — keep the
+ * two the same. Four things are refused rather than guessed at:
+ *   - an unterminated literal or block comment;
+ *   - a backslash before a quote, because where the literal ends then depends on
+ *     the server's NO_BACKSLASH_ESCAPES sql_mode (use '' to embed a quote);
+ *   - /*! ... *\/ (MySQL) and /*M! ... *\/ (MariaDB) executable comments, whose
+ *     contents the server RUNS — they are not comments and cannot be stripped;
+ *   - a quoted token followed by `(`, i.e. a function called by a quoted name.
+ *     Both engines resolve `LOAD_FILE`('/etc/passwd') exactly as the bare
+ *     builtin, so blanking the identifier would erase the keyword you are
+ *     looking for. That test runs at the END, on the finished string, where
+ *     comments have already become spaces — checking it inline against the raw
+ *     text would only cover the separators someone thought of, and a comment is
+ *     whitespace to the server.
+ */
+function mcp_wp_normalize_sql($query) {
+    // A raw NUL cannot be told apart from the marker used below for a blanked
+    // quoted token, and nothing legitimate sends one.
+    if (strpos($query, "\0") !== false) {
+        return null;
+    }
+
+    $out = '';
+    $len = strlen($query);
+    $i = 0;
+
+    while ($i < $len) {
+        $ch = $query[$i];
+
+        if ($ch === "'" || $ch === '"' || $ch === '`') {
+            $quote = $ch;
+            $i++;
+            $closed = false;
+            while ($i < $len) {
+                $c = $query[$i];
+                if ($c === '\\' && $quote !== '`') {
+                    $next = $i + 1 < $len ? $query[$i + 1] : '';
+                    if ($next === "'" || $next === '"' || $next === '`') {
+                        return null;
+                    }
+                    $i += 2;
+                    continue;
+                }
+                if ($c === $quote) {
+                    if ($i + 1 < $len && $query[$i + 1] === $quote) { $i += 2; continue; }
+                    $i++;
+                    $closed = true;
+                    break;
+                }
+                $i++;
+            }
+            if (!$closed) {
+                return null;
+            }
+            // Marked rather than blanked, so the quoted-function-name test can
+            // run once at the end over the finished string.
+            $out .= "\0";
+            continue;
+        }
+
+        if ($ch === '/' && $i + 1 < $len && $query[$i + 1] === '*') {
+            if (preg_match('/^[Mm]?!/', substr($query, $i + 2, 2))) {
+                return null;
+            }
+            $end = strpos($query, '*/', $i + 2);
+            if ($end === false) {
+                return null;
+            }
+            $i = $end + 2;
+            $out .= ' ';
+            continue;
+        }
+
+        // The server starts a `--` comment on whitespace OR a control character
+        // (`my_isspace || my_iscntrl`); `a--b` is arithmetic. Below 0x80 that is
+        // fixed, and it is `[\x00-\x20\x7F]`.
+        //
+        // At or above 0x80 it is decided by character_set_client — which $wpdb
+        // takes from DB_CHARSET — and the two engines do not even agree with each
+        // other. The same byte can be a comment starter, an ordinary identifier
+        // character, or an error, depending on both. Neither answer is safe to
+        // guess: treat it as a comment and `SELECT 1--<0xA0> ... INTO OUTFILE` has
+        // its whole tail blanked while the server runs it; treat it as code and
+        // `\`LOAD_FILE\`--<0xA0>\n(...)` keeps text the server drops, which pushes
+        // the quoted name away from its `(` and defeats the check below. Both were
+        // measured, in both directions.
+        //
+        // So it is refused, like every other construct here that cannot be read
+        // unambiguously. Nothing legitimate puts a high byte straight after `--`.
+        $next = $i + 2 < $len ? $query[$i + 2] : '';
+
+        if ($ch === '-' && $i + 1 < $len && $query[$i + 1] === '-'
+            && $next !== '' && preg_match('/[\x80-\xFF]/', $next)) {
+            return null;
+        }
+
+        if ($ch === '-' && $i + 1 < $len && $query[$i + 1] === '-'
+            && ($next === '' || preg_match('/[\x00-\x20\x7F]/', $next))) {
+            $nl = strpos($query, "\n", $i);
+            $i = $nl === false ? $len : $nl;
+            $out .= ' ';
+            continue;
+        }
+
+        if ($ch === '#') {
+            $nl = strpos($query, "\n", $i);
+            $i = $nl === false ? $len : $nl;
+            $out .= ' ';
+            continue;
+        }
+
+        $out .= $ch;
+        $i++;
+    }
+
+    // A quoted token followed by `(` is a function called by a quoted name.
+    // PCRE's \s is ASCII-only, and whether a high byte separates two tokens is
+    // charset-dependent — a raw 0xA0 there calls the builtin on both engines
+    // under latin1 — so every high byte counts as a separator. Unlike the `--`
+    // class above, widening *here* only ever rejects more, and nothing
+    // legitimate puts a non-ASCII byte between an identifier and its `(`.
+    if (preg_match('/\x00[\s\x80-\xFF]*\(/', $out)) {
+        return null;
+    }
+
+    return str_replace("\0", ' ', $out);
+}
+
 add_action('rest_api_init', function() {
     register_rest_route('mcp/v1', '/query', array(
         'methods' => 'POST',
@@ -502,9 +677,51 @@ add_action('rest_api_init', function() {
                 return new WP_Error('unauthorized', 'Unauthorized', array('status' => 401));
             }
 
-            // Only allow SELECT queries
-            if (stripos(trim($query), 'SELECT') !== 0) {
-                return new WP_Error('invalid_query', 'Only SELECT queries allowed', array('status' => 400));
+            // A JSON body can send anything; without this a `{"query": []}`
+            // is a PHP TypeError and a 500 rather than a 400.
+            if (!is_string($query)) {
+                return new WP_Error('invalid_query', 'query must be a string', array('status' => 400));
+            }
+
+            // Read-only statements only. Checked on the raw query, like the
+            // client, so a leading comment stays a rejection rather than
+            // becoming allowed once comments are blanked below.
+            $trimmed = ltrim($query, " \t\n\r\0\x0B\f");
+            if (stripos($trimmed, 'SELECT') !== 0
+                && stripos($trimmed, 'WITH ') !== 0
+                && stripos($trimmed, 'EXPLAIN ') !== 0) {
+                return new WP_Error('invalid_query', 'Only read-only queries (SELECT, WITH...SELECT, EXPLAIN) are allowed', array('status' => 400));
+            }
+
+            // Do not trust the caller's validation. Every check below runs against
+            // the normalized query, so a keyword inside a literal is not a false
+            // positive and one split by a comment is not a bypass (the server
+            // treats a comment as whitespace).
+            $normalized = mcp_wp_normalize_sql($query);
+
+            if (!is_string($normalized)) {
+                return new WP_Error('invalid_query', 'Query could not be validated', array('status' => 400));
+            }
+
+            // One statement only.
+            if (preg_match('/;\s*\S/', $normalized)) {
+                return new WP_Error('invalid_query', 'Only one statement is allowed', array('status' => 400));
+            }
+
+            // INTO OUTFILE / INTO DUMPFILE write a file on the database host and
+            // LOAD_FILE() reads one; all three are valid SELECT syntax.
+            if (preg_match('/\b(INTO|LOAD_FILE)\b/i', $normalized)) {
+                return new WP_Error('invalid_query', 'Filesystem access is not allowed', array('status' => 400));
+            }
+
+            if (preg_match('/\b(DROP|DELETE|UPDATE|ALTER|CREATE|GRANT|REVOKE)\b/i', $normalized)) {
+                return new WP_Error('invalid_query', 'Only read-only queries are allowed', array('status' => 400));
+            }
+
+            // INSERT(), TRUNCATE() and REPLACE() are also ordinary read-only
+            // functions, so these three only count when no `(` follows.
+            if (preg_match('/\b(INSERT|TRUNCATE|REPLACE)\b(?!\s*\()/i', $normalized)) {
+                return new WP_Error('invalid_query', 'Only read-only queries are allowed', array('status' => 400));
             }
 
             $results = $wpdb->get_results($query, ARRAY_A);

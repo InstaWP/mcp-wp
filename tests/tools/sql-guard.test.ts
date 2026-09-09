@@ -1,0 +1,355 @@
+// Regression tests for the `execute_sql_query` read-only bypass reported
+// privately by Syed Anas Mohiuddin (2026-09).
+//
+// The gate used to be: starts with SELECT/WITH/EXPLAIN, no second statement, and
+// a fixed DDL/DML blocklist. `INTO OUTFILE`, `INTO DUMPFILE` and `LOAD_FILE()`
+// are all valid SELECT syntax and match none of those, so an arbitrary file read
+// or write passed validation while the tool description promised "only SELECT
+// queries are allowed".
+//
+// These drive the exported handler, not the guard alone, and assert the rejected
+// query NEVER REACHES THE WIRE — a guard that runs after the request is no guard.
+import { describe, it, expect, vi, beforeAll, afterAll, beforeEach } from 'vitest';
+import http from 'node:http';
+import type { AddressInfo } from 'node:net';
+
+const state = vi.hoisted(() => ({ baseUrl: '' }));
+
+vi.mock('../../src/config/site-manager.js', () => ({
+  siteManager: {
+    getSite: () => ({ id: 'default', url: state.baseUrl, username: 'user', password: 'pass' })
+  }
+}));
+
+const { sqlQueryHandlers, normalizeQuery } = await import('../../src/tools/sql-query.js');
+
+let server: http.Server;
+let requestsReceived = 0;
+
+beforeAll(async () => {
+  server = http.createServer((req, res) => {
+    requestsReceived++;
+    req.resume();
+    req.on('end', () => {
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ results: [], num_rows: 0 }));
+    });
+  });
+  await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+  const { port } = server.address() as AddressInfo;
+  state.baseUrl = `http://127.0.0.1:${port}`;
+});
+
+afterAll(async () => {
+  await new Promise<void>((resolve, reject) => server.close((err) => (err ? reject(err) : resolve())));
+});
+
+beforeEach(() => {
+  requestsReceived = 0;
+});
+
+async function run(query: string) {
+  const result: any = await sqlQueryHandlers.execute_sql_query({ query });
+  return { isError: !!result.toolResult.isError, text: result.toolResult.content[0].text as string };
+}
+
+describe('execute_sql_query rejects filesystem access disguised as a SELECT', () => {
+  // The three payloads from the report, verbatim in shape.
+  it('rejects LOAD_FILE (arbitrary file read)', async () => {
+    const { isError, text } = await run("SELECT LOAD_FILE('/etc/passwd')");
+    expect(isError).toBe(true);
+    expect(text).toMatch(/LOAD_FILE/);
+    expect(requestsReceived).toBe(0);
+  });
+
+  it('rejects INTO DUMPFILE (arbitrary file write — webshell drop)', async () => {
+    const { isError, text } = await run(
+      "SELECT '<?php system($_GET[\"cmd\"]); ?>' INTO DUMPFILE '/var/www/html/wp-content/uploads/pwn.php'"
+    );
+    expect(isError).toBe(true);
+    expect(text).toMatch(/INTO/);
+    expect(requestsReceived).toBe(0);
+  });
+
+  it('rejects INTO OUTFILE (arbitrary file write — data exfiltration)', async () => {
+    const { isError } = await run(
+      "SELECT user_login, user_pass FROM wp_users INTO OUTFILE '/var/www/html/wp-content/uploads/users.txt'"
+    );
+    expect(isError).toBe(true);
+    expect(requestsReceived).toBe(0);
+  });
+
+  it('rejects a lowercase / mixed-case variant', async () => {
+    expect((await run("select load_file('/etc/passwd')")).isError).toBe(true);
+    expect((await run("SELECT 1 iNtO oUtFiLe '/tmp/x'")).isError).toBe(true);
+    expect(requestsReceived).toBe(0);
+  });
+
+  it('rejects INTO OUTFILE split by a block comment', async () => {
+    // MySQL treats a comment as whitespace, so this is the same statement.
+    const { isError } = await run("SELECT 1 INTO/**/OUTFILE '/tmp/x'");
+    expect(isError).toBe(true);
+    expect(requestsReceived).toBe(0);
+  });
+
+  it('rejects INTO OUTFILE inside a WITH...SELECT and an EXPLAIN', async () => {
+    expect((await run("WITH t AS (SELECT 1 AS a) SELECT a FROM t INTO OUTFILE '/tmp/x'")).isError).toBe(true);
+    expect((await run("EXPLAIN SELECT 1 INTO OUTFILE '/tmp/x'")).isError).toBe(true);
+    expect(requestsReceived).toBe(0);
+  });
+});
+
+describe('execute_sql_query rejects queries it cannot read unambiguously', () => {
+  it('rejects a MySQL executable comment', async () => {
+    // /*! ... */ is NOT a comment: the server runs its contents, so a stripper
+    // that treated it as one would smuggle a second statement past the `;` check.
+    const { isError } = await run('SELECT 1 /*!50000;DROP TABLE wp_users*/');
+    expect(isError).toBe(true);
+    expect(requestsReceived).toBe(0);
+  });
+
+  it('rejects a MariaDB executable comment', async () => {
+    // MariaDB executes /*M! ... */ and /*M!! ... */ exactly as MySQL executes
+    // /*! ... */, and WordPress hosting is predominantly MariaDB. Verified on
+    // MariaDB 11.8: this payload with the guard removed writes the file.
+    const { isError } = await run("SELECT 'x' /*M!50000 INTO OUTFILE '/var/www/html/wp-content/uploads/pwn.php' */");
+    expect(isError).toBe(true);
+    expect(requestsReceived).toBe(0);
+
+    const doubled = await run("SELECT 'x' /*M!!50000 INTO OUTFILE '/tmp/pwn' */");
+    expect(doubled.isError).toBe(true);
+    expect(requestsReceived).toBe(0);
+  });
+
+  it('rejects a function called by a backtick-quoted name', async () => {
+    // Blanking the identifier would erase LOAD_FILE before any check saw it,
+    // while the server resolves the quoted name exactly as the bare one.
+    // Verified on MariaDB 11.8 and MySQL 8.0.46: this reads the file.
+    const { isError } = await run("SELECT `LOAD_FILE`('/etc/passwd')");
+    expect(isError).toBe(true);
+    expect(requestsReceived).toBe(0);
+  });
+
+  it('rejects a function called by a double-quoted name (ANSI_QUOTES)', async () => {
+    const { isError } = await run('SELECT "LOAD_FILE"(\'/etc/passwd\')');
+    expect(isError).toBe(true);
+    expect(requestsReceived).toBe(0);
+  });
+
+  it('rejects a quoted function name separated from its parenthesis by whitespace', async () => {
+    // IGNORE_SPACE lets a builtin be called with a space before the paren.
+    const { isError } = await run("SELECT `LOAD_FILE` ('/etc/passwd')");
+    expect(isError).toBe(true);
+    expect(requestsReceived).toBe(0);
+  });
+
+  it('rejects a quoted function name separated from its parenthesis by a comment', async () => {
+    // A comment is whitespace to the server, so a lookahead over the raw text
+    // that skips only whitespace covers the separators it was written for and
+    // nothing else. Verified on MySQL 8.0.46: the first of these reads the file.
+    // The test for a quoted name therefore runs on the NORMALIZED query, where
+    // every comment has already become a space.
+    const payloads = [
+      "SELECT `LOAD_FILE`/**/('/etc/passwd')",
+      "SELECT `LOAD_FILE`#c\n('/etc/passwd')",
+      "SELECT `LOAD_FILE`-- c\n('/etc/passwd')",
+      "SELECT \"LOAD_FILE\"/**/('/etc/passwd')",
+      "SELECT `LOAD_FILE` /**/ ('/etc/passwd')",
+      "SELECT `LOAD_FILE`/**//**/('/etc/passwd')"
+    ];
+    for (const payload of payloads) {
+      const { isError } = await run(payload);
+      expect(isError, payload).toBe(true);
+    }
+    expect(requestsReceived).toBe(0);
+  });
+
+  it('rejects a quoted function name separated by a control-character comment', async () => {
+    // The server starts a `--` comment on whitespace OR a control character
+    // (my_isspace || my_iscntrl), which is wider than any whitespace class. A
+    // scanner that stops at whitespace leaves `--<ctrl>\n` in place between the
+    // quoted name and its `(`, so the adjacency test does not fire and the
+    // identifier has already been blanked. Verified on MySQL 8.0.46 and MariaDB
+    // 11.8.8: `SELECT \`VERSION\`--<0x01>\n()` runs the builtin.
+    for (const code of [0x01, 0x07, 0x1f, 0x7f]) {
+      const payload = `SELECT \`LOAD_FILE\`--${String.fromCharCode(code)}\n('/etc/passwd')`;
+      const { isError } = await run(payload);
+      expect(isError, `separator 0x${code.toString(16)}`).toBe(true);
+    }
+    expect(requestsReceived).toBe(0);
+  });
+
+  it('rejects `--` followed by a high byte rather than guessing whether it is a comment', async () => {
+    // At or above 0x80 the answer depends on character_set_client, and MySQL and
+    // MariaDB disagree with each other. Guessing is unsafe both ways: called a
+    // comment, the first payload's tail is blanked and the file write is invisible
+    // (`SELECT 1 `); called code, the second keeps text the server drops, which
+    // pushes the quoted name away from its `(` and defeats the adjacency check.
+    // 0x80 pins the boundary itself, not just a byte comfortably above it.
+    for (const code of [0x80, 0xa0, 0xff]) {
+      const sep = String.fromCharCode(code);
+      const blanked = `SELECT 1--${sep} FROM (SELECT 1 AS x) t INTO OUTFILE '/tmp/pwn'`;
+      const kept = `SELECT \`LOAD_FILE\`--${sep}\n('/etc/passwd')`;
+      // The separator between a quoted function name and its `(` is a separate
+      // class, and a high byte is a valid one there on a non-utf8 connection.
+      const qname = `SELECT \`LOAD_FILE\`${sep}('/etc/passwd')`;
+      expect((await run(blanked)).isError, `blanked 0x${code.toString(16)}`).toBe(true);
+      expect((await run(kept)).isError, `kept 0x${code.toString(16)}`).toBe(true);
+      expect((await run(qname)).isError, `qname 0x${code.toString(16)}`).toBe(true);
+    }
+    expect(requestsReceived).toBe(0);
+  });
+
+  it('does not refuse ordinary UTF-8 content or identifiers', async () => {
+    // The refusal fires only on a high byte IMMEDIATELY after `--`; everything
+    // else multibyte must still work, or the guard has cost more than it saved.
+    expect((await run("SELECT * FROM wp_posts WHERE post_title = 'café'")).isError).toBe(false);
+    expect((await run('SELECT `café` FROM wp_posts')).isError).toBe(false);
+    expect((await run('SELECT post_title AS café FROM wp_posts')).isError).toBe(false);
+    expect((await run('SELECT 1 -- café comment')).isError).toBe(false);
+  });
+
+  it('rejects a query containing a NUL byte', async () => {
+    // Indistinguishable from the marker normalizeQuery uses internally.
+    const { isError } = await run('SELECT 1 \u0000');
+    expect(isError).toBe(true);
+    expect(requestsReceived).toBe(0);
+  });
+
+  it('rejects a backslash-escaped quote inside a literal', async () => {
+    // Where the literal ends depends on the server's NO_BACKSLASH_ESCAPES mode,
+    // which is the lever every quote-confusion bypass pulls.
+    const { isError } = await run("SELECT 'a\\' , (SELECT 1) INTO OUTFILE '/tmp/x'");
+    expect(isError).toBe(true);
+    expect(requestsReceived).toBe(0);
+  });
+
+  it('rejects an unterminated string literal', async () => {
+    expect((await run("SELECT 'abc")).isError).toBe(true);
+    expect(requestsReceived).toBe(0);
+  });
+
+  it('rejects an unterminated block comment', async () => {
+    expect((await run('SELECT 1 /* abc')).isError).toBe(true);
+    expect(requestsReceived).toBe(0);
+  });
+});
+
+describe('execute_sql_query still allows real read-only queries', () => {
+  it('runs an ordinary SELECT', async () => {
+    const { isError } = await run("SELECT ID, post_title FROM wp_posts WHERE post_status = 'publish' LIMIT 10");
+    expect(isError).toBe(false);
+    expect(requestsReceived).toBe(1);
+  });
+
+  it('no longer rejects a keyword that only appears inside a string literal', async () => {
+    // The old blocklist matched the raw query, so this was a false positive.
+    const { isError } = await run("SELECT ID FROM wp_posts WHERE post_title = 'How to drop a table'");
+    expect(isError).toBe(false);
+    expect(requestsReceived).toBe(1);
+  });
+
+  it('no longer rejects "into" inside a string literal', async () => {
+    const { isError } = await run("SELECT ID FROM wp_posts WHERE post_title = 'Into the woods'");
+    expect(isError).toBe(false);
+  });
+
+  it('allows a trailing semicolon and a quote escaped the portable way', async () => {
+    const { isError } = await run("SELECT ID FROM wp_posts WHERE post_title = 'it''s fine';");
+    expect(isError).toBe(false);
+  });
+
+  it('still blocks a genuine second statement', async () => {
+    const { isError } = await run('SELECT 1; DROP TABLE wp_users');
+    expect(isError).toBe(true);
+    expect(requestsReceived).toBe(0);
+  });
+
+  it('blocks a second statement that the DDL blocklist would not catch', async () => {
+    // The payload above is caught twice over — by the `;` check and by DROP — so
+    // it cannot tell whether the multi-statement check works. This one can: with
+    // that check disabled it is the only case in the file that stays green.
+    const { isError, text } = await run('SELECT 1; SELECT 2');
+    expect(isError).toBe(true);
+    expect(text).toMatch(/Multiple SQL statements/);
+    expect(requestsReceived).toBe(0);
+  });
+
+  it('no longer rejects an identifier that merely ends in a DDL keyword', async () => {
+    // `UPDATE\s+` matched `last_update `, so this was refused as dangerous.
+    const { isError } = await run('SELECT last_update FROM wp_term_taxonomy LIMIT 1');
+    expect(isError).toBe(false);
+  });
+
+  it('allows the read-only builtins that share a name with a DDL keyword', async () => {
+    // INSERT() is a string function, TRUNCATE() a numeric one and REPLACE() a
+    // string one. Word-boundary matching would refuse all three, and no statement
+    // form can reach this far anyway — the prefix check has already required
+    // SELECT/WITH/EXPLAIN.
+    expect((await run("SELECT INSERT('Quadratic', 3, 4, 'What')")).isError).toBe(false);
+    expect((await run('SELECT TRUNCATE(1.234, 2) FROM wp_posts LIMIT 1')).isError).toBe(false);
+    expect((await run("SELECT REPLACE(post_title, 'a', 'b') FROM wp_posts LIMIT 1")).isError).toBe(false);
+  });
+
+  it('still blocks the statement forms of those keywords', async () => {
+    // REPLACE ... SET needs no INTO, so nothing else on the list would catch it.
+    expect((await run('SELECT 1 UNION REPLACE wp_posts SET ID = 1')).isError).toBe(true);
+    expect((await run('SELECT 1 UNION INSERT wp_posts SET ID = 1')).isError).toBe(true);
+    expect(requestsReceived).toBe(0);
+  });
+
+  it('leaves arithmetic alone: `--` is only a comment when a space follows', async () => {
+    const { isError } = await run('SELECT 1--2 AS a');
+    expect(isError).toBe(false);
+  });
+
+  it('blocks a DDL keyword at the very end of the query', async () => {
+    // The coverage word boundaries ADD: `DROP\s+` needed trailing whitespace, so
+    // a keyword in final position matched nothing.
+    const { isError } = await run('SELECT 1 FROM wp_posts DROP');
+    expect(isError).toBe(true);
+    expect(requestsReceived).toBe(0);
+  });
+
+  it('still blocks a non-SELECT statement', async () => {
+    const { isError } = await run('DELETE FROM wp_users');
+    expect(isError).toBe(true);
+    expect(requestsReceived).toBe(0);
+  });
+});
+
+describe('normalizeQuery', () => {
+  it('replaces literals, identifiers and comments with a single space', () => {
+    expect(normalizeQuery("SELECT `a` FROM t WHERE x = 'y' /* c */ AND z = 1"))
+      .toBe('SELECT   FROM t WHERE x =     AND z = 1');
+  });
+
+  it('collapses a comment to whitespace rather than to nothing', () => {
+    // Collapsing to nothing would join the tokens either side and change meaning.
+    expect(normalizeQuery('SELECT 1 INTO/**/OUTFILE')).toBe('SELECT 1 INTO OUTFILE');
+  });
+
+  it('treats -- as a comment only when whitespace follows, as MySQL does', () => {
+    expect(normalizeQuery('SELECT 1 -- drop\nFROM t')).toBe('SELECT 1  \nFROM t');
+    expect(normalizeQuery('SELECT 1--2')).toBe('SELECT 1--2');
+  });
+
+  it('handles a # comment', () => {
+    expect(normalizeQuery('SELECT 1 # drop\nFROM t')).toBe('SELECT 1  \nFROM t');
+  });
+
+  it('does not treat a comment marker inside a literal as a comment', () => {
+    expect(normalizeQuery("SELECT '-- /* #' FROM t")).toBe('SELECT   FROM t');
+  });
+
+  it('returns null on the ambiguous and unterminated cases', () => {
+    expect(normalizeQuery("SELECT 'a\\'b'")).toBeNull();
+    expect(normalizeQuery("SELECT 'abc")).toBeNull();
+    expect(normalizeQuery('SELECT 1 /* abc')).toBeNull();
+    expect(normalizeQuery('SELECT 1 /*!50000 x */')).toBeNull();
+  });
+
+  it('accepts a backslash that is not escaping a quote', () => {
+    expect(normalizeQuery("SELECT 'a\\nb' FROM t")).toBe('SELECT   FROM t');
+  });
+});
