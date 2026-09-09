@@ -209,7 +209,12 @@ export function normalizeQuery(query: string): string | null {
   // it is refused — nothing read-only needs to call a function by a quoted name.
   // Tested here, at the end, because comments have collapsed to spaces by now:
   // one test covers every separator rather than the ones anyone thought of.
-  if (new RegExp(`${SENTINEL}\\s*\\(`).test(out)) return null;
+  // The separator class here is deliberately wider than whitespace: whether a
+  // high byte separates two tokens is charset-dependent too (a raw 0xA0 calls the
+  // builtin on both engines under latin1), and unlike the `--` rule, widening
+  // this one only ever rejects more. Nothing legitimate puts a non-ASCII
+  // character between an identifier and its opening parenthesis.
+  if (new RegExp(`${SENTINEL}[\\s\\u0080-\\uffff]*\\(`).test(out)) return null;
 
   return out.split(SENTINEL).join(' ');
 }

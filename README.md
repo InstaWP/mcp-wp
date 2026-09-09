@@ -652,10 +652,12 @@ function mcp_wp_normalize_sql($query) {
     }
 
     // A quoted token followed by `(` is a function called by a quoted name.
-    // PCRE's \s is ASCII-only, so the high bytes some charsets also accept as a
-    // token separator are added explicitly. Widening *here* only ever rejects
-    // more, so unlike the `--` class above it has no downside.
-    if (preg_match('/\x00[\s\xA0\xFF]*\(/', $out)) {
+    // PCRE's \s is ASCII-only, and whether a high byte separates two tokens is
+    // charset-dependent — a raw 0xA0 there calls the builtin on both engines
+    // under latin1 — so every high byte counts as a separator. Unlike the `--`
+    // class above, widening *here* only ever rejects more, and nothing
+    // legitimate puts a non-ASCII byte between an identifier and its `(`.
+    if (preg_match('/\x00[\s\x80-\xFF]*\(/', $out)) {
         return null;
     }
 

@@ -132,12 +132,17 @@ foreach (array_merge($corpus['must_reject'], $corpus['must_allow']) as $query) {
 // high byte after a double dash starts a comment is charset- and engine-dependent,
 // so it is refused; both directions of getting that wrong are bypasses.
 $high = array();
-foreach (array(0xA0, 0xFF) as $byte) {
+foreach (array(0x80, 0xA0, 0xFF) as $byte) {
     $c = chr($byte);
     $high['__blanked_' . dechex($byte) . '__'] =
         "SELECT 1--$c FROM (SELECT 1 AS x) t INTO OUTFILE '/tmp/pwn'";
     $high['__kept_' . dechex($byte) . '__'] =
         "SELECT \`LOAD_FILE\`--$c\n('/etc/passwd')";
+    // The separator between a quoted function name and its opening parenthesis
+    // is its own class, and a high byte is a valid one on a non-utf8 connection:
+    // measured, a raw 0xA0 there calls the builtin on MySQL 8.0.46 and MariaDB
+    // 11.8.8 under latin1. Also uncoverable by the corpus, same UTF-8 reason.
+    $high['__qname_' . dechex($byte) . '__'] = "SELECT \`LOAD_FILE\`$c('/etc/passwd')";
 }
 foreach ($high as $label => $payload) {
     $GLOBALS['wpdb']->ran = null;
@@ -209,7 +214,14 @@ describe('the README WordPress endpoint agrees with the client', () => {
     }
 
     // The harness reached the endpoint at all.
-    const extra = ['__blanked_a0__', '__kept_a0__', '__blanked_ff__', '__kept_ff__', '__non_string__', '__null__'];
+    const extra = [
+      ...[0x80, 0xa0, 0xff].flatMap((b) => {
+        const hex = b.toString(16);
+        return [`__blanked_${hex}__`, `__kept_${hex}__`, `__qname_${hex}__`];
+      }),
+      '__non_string__',
+      '__null__'
+    ];
     expect(Object.keys(endpoint).length).toBe(corpus.must_reject.length + corpus.must_allow.length + extra.length);
     expect(Object.values(endpoint).some((r) => r.ran)).toBe(true);
 

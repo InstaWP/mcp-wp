@@ -29,8 +29,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   comment rule is therefore matched as `[\x00-\x20\x7f]`: too wide blanks text the server executes, and
   too narrow leaves text the server drops sitting between the tokens being compared. Above `0x7f` that
   rule is decided by `character_set_client`, and MySQL and MariaDB disagree with each other, so a high
-  byte straight after `--` is **refused** rather than classified — guessing is a bypass either way.
-  The example WordPress
+  byte straight after `--` is **refused** rather than classified — guessing is a bypass either way. The
+  separator between a quoted name and its `(` is a different class and is widened instead, since
+  widening there can only reject more. The example WordPress
   endpoint in `README.md` now repeats these checks server-side using the same scanner, since the
   client's validation is not a boundary — its previous regex-based normalizer stripped comments before
   string literals, which made `SELECT '#' INTO OUTFILE '/tmp/x'` read as harmless.

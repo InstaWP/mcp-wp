@@ -185,14 +185,28 @@ describe('execute_sql_query rejects queries it cannot read unambiguously', () =>
     // comment, the first payload's tail is blanked and the file write is invisible
     // (`SELECT 1 `); called code, the second keeps text the server drops, which
     // pushes the quoted name away from its `(` and defeats the adjacency check.
-    for (const code of [0xa0, 0xff]) {
+    // 0x80 pins the boundary itself, not just a byte comfortably above it.
+    for (const code of [0x80, 0xa0, 0xff]) {
       const sep = String.fromCharCode(code);
       const blanked = `SELECT 1--${sep} FROM (SELECT 1 AS x) t INTO OUTFILE '/tmp/pwn'`;
       const kept = `SELECT \`LOAD_FILE\`--${sep}\n('/etc/passwd')`;
+      // The separator between a quoted function name and its `(` is a separate
+      // class, and a high byte is a valid one there on a non-utf8 connection.
+      const qname = `SELECT \`LOAD_FILE\`${sep}('/etc/passwd')`;
       expect((await run(blanked)).isError, `blanked 0x${code.toString(16)}`).toBe(true);
       expect((await run(kept)).isError, `kept 0x${code.toString(16)}`).toBe(true);
+      expect((await run(qname)).isError, `qname 0x${code.toString(16)}`).toBe(true);
     }
     expect(requestsReceived).toBe(0);
+  });
+
+  it('does not refuse ordinary UTF-8 content or identifiers', async () => {
+    // The refusal fires only on a high byte IMMEDIATELY after `--`; everything
+    // else multibyte must still work, or the guard has cost more than it saved.
+    expect((await run("SELECT * FROM wp_posts WHERE post_title = 'café'")).isError).toBe(false);
+    expect((await run('SELECT `café` FROM wp_posts')).isError).toBe(false);
+    expect((await run('SELECT post_title AS café FROM wp_posts')).isError).toBe(false);
+    expect((await run('SELECT 1 -- café comment')).isError).toBe(false);
   });
 
   it('rejects a query containing a NUL byte', async () => {
