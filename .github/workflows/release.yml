@@ -19,7 +19,7 @@ on:
         type: string
 
 permissions:
-  contents: read
+  contents: write # create the GitHub Release at the end
   id-token: write # npm provenance
 
 # Two tags pushed back to back must not publish concurrently.
@@ -98,6 +98,7 @@ jobs:
         run: npm test
 
       - name: Publish
+        id: publish
         run: npm publish --provenance --access public --tag "$NPM_TAG"
         env:
           NPM_TAG: ${{ steps.v.outputs.npm_tag }}
@@ -125,3 +126,56 @@ jobs:
           done
           echo "::error::Published, but $NAME@$VERSION is still not resolvable after ~2 minutes. Check https://www.npmjs.com/package/$NAME before re-running — do NOT assume the publish failed."
           exit 1
+
+      # Without this the repository's Releases page keeps showing the PREVIOUS
+      # version as latest, which is worst on a security release: the tag exists
+      # and npm serves the fix, but anyone reading the repo — a reporter checking
+      # whether we shipped, most of all — sees a stale version and concludes we
+      # did not. Runs last, so a failure here cannot affect the publish, and it is
+      # idempotent so the workflow_dispatch recovery path can be re-run.
+      #
+      # Gated on the PUBLISH step, not on the job: `always()` alone would announce
+      # "Published to npm" after a publish that failed, and a release note is
+      # exactly the kind of plausible artefact nobody re-checks. This condition
+      # runs it when the publish succeeded and something AFTER it did not — which
+      # is the case that motivated the step, since the registry-propagation check
+      # times out on a perfectly good publish.
+      - name: Create the GitHub Release
+        if: always() && steps.publish.outcome == 'success' && steps.v.outputs.version != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ inputs.tag || github.ref_name }}
+          NAME: ${{ steps.v.outputs.name }}
+          VERSION: ${{ steps.v.outputs.version }}
+        run: |
+          set -euo pipefail
+
+          if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo "Release $TAG already exists; leaving it alone."
+            exit 0
+          fi
+
+          # The matching CHANGELOG section, if there is one — from the first
+          # `## [x.y.z]` heading to the next `## [`.
+          NOTES=$(awk -v v="$VERSION" '
+            $0 ~ "^## \\[" v "\\]" { f = 1; next }
+            f && /^## \[/ { exit }
+            f { print }
+          ' CHANGELOG.md)
+
+          {
+            echo "Published to npm as \`$NAME@$VERSION\`."
+            echo
+            echo 'Merging a fix does not reach anyone — this tag is what published it, and an already-installed copy stays on its old version until it is upgraded.'
+            if [ -n "$NOTES" ]; then
+              echo
+              echo '---'
+              echo "$NOTES"
+            fi
+          } > /tmp/release-notes.md
+
+          gh release create "$TAG" \
+            --repo "$GITHUB_REPOSITORY" \
+            --title "$TAG" \
+            --notes-file /tmp/release-notes.md
+          echo "Created the GitHub Release for $TAG." >> "$GITHUB_STEP_SUMMARY"
