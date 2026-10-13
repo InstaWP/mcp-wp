@@ -26,7 +26,7 @@ Manage multiple WordPress sites from a single MCP server:
 - `get_site`: Get details about a specific site configuration
 - `test_site`: Test connection to a specific WordPress site
 
-All content and taxonomy tools support an optional `site_id` parameter to target specific sites.
+All content, taxonomy, media, plugin, comment, and user tools support an optional `site_id` parameter to target specific sites.
 
 ### **Unified Content Management** (9 tools)
 

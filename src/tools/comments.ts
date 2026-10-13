@@ -6,6 +6,7 @@ import { z } from 'zod';
 
 // Schema for listing comments
 const listCommentsSchema = z.object({
+  site_id: z.string().optional().describe("Site ID (for multi-site setups)"),
   page: z.coerce.number().optional().describe("Page number (default 1)"),
   per_page: z.coerce.number().min(1).max(100).optional().describe("Items per page (default 10, max 100)"),
   search: z.string().optional().describe("Search term for comment content"),
@@ -22,11 +23,13 @@ const listCommentsSchema = z.object({
 
 // Schema for getting a single comment
 const getCommentSchema = z.object({
+  site_id: z.string().optional().describe("Site ID (for multi-site setups)"),
   id: z.coerce.number().describe("Comment ID")
 }).strict();
 
 // Schema for creating a comment
 const createCommentSchema = z.object({
+  site_id: z.string().optional().describe("Site ID (for multi-site setups)"),
   post: z.coerce.number().describe("The ID of the post object the comment is for"),
   author: z.coerce.number().optional().describe("The ID of the user object, if the author is a registered user"),
   author_name: z.string().optional().describe("Display name for the comment author"),
@@ -39,6 +42,7 @@ const createCommentSchema = z.object({
 
 // Schema for updating a comment
 const updateCommentSchema = z.object({
+  site_id: z.string().optional().describe("Site ID (for multi-site setups)"),
   id: z.coerce.number().describe("Comment ID"),
   post: z.coerce.number().optional().describe("The ID of the post object the comment is for"),
   author: z.coerce.number().optional().describe("The ID of the user object, if the author is a registered user"),
@@ -52,6 +56,7 @@ const updateCommentSchema = z.object({
 
 // Schema for deleting a comment
 const deleteCommentSchema = z.object({
+  site_id: z.string().optional().describe("Site ID (for multi-site setups)"),
   id: z.coerce.number().describe("Comment ID"),
   force: z.boolean().optional().describe("Whether to bypass trash and force deletion")
 }).strict();
@@ -96,7 +101,8 @@ export const commentTools: Tool[] = [
 export const commentHandlers = {
   list_comments: async (params: ListCommentsParams) => {
     try {
-      const response = await makeWordPressRequest('GET', "comments", params);
+      const { site_id, ...query } = params;
+      const response = await makeWordPressRequest('GET', "comments", query, { siteId: site_id });
       const comments: WPComment[] = response;
       return {
         toolResult: {
@@ -116,7 +122,7 @@ export const commentHandlers = {
   
   get_comment: async (params: GetCommentParams) => {
     try {
-      const response = await makeWordPressRequest('GET', `comments/${params.id}`);
+      const response = await makeWordPressRequest('GET', `comments/${params.id}`, undefined, { siteId: params.site_id });
       const comment: WPComment = response;
       return {
         toolResult: {
@@ -136,7 +142,8 @@ export const commentHandlers = {
   
   create_comment: async (params: CreateCommentParams) => {
     try {
-      const response = await makeWordPressRequest('POST', "comments", params);
+      const { site_id, ...body } = params;
+      const response = await makeWordPressRequest('POST', "comments", body, { siteId: site_id });
       const comment: WPComment = response;
       return {
         toolResult: {
@@ -156,8 +163,8 @@ export const commentHandlers = {
   
   update_comment: async (params: UpdateCommentParams) => {
     try {
-      const { id, ...updateData } = params;
-      const response = await makeWordPressRequest('POST', `comments/${id}`, updateData);
+      const { id, site_id, ...updateData } = params;
+      const response = await makeWordPressRequest('POST', `comments/${id}`, updateData, { siteId: site_id });
       const comment: WPComment = response;
       return {
         toolResult: {
@@ -177,7 +184,7 @@ export const commentHandlers = {
   
   delete_comment: async (params: DeleteCommentParams) => {
     try {
-      const response = await makeWordPressRequest('DELETE', `comments/${params.id}`, { force: params.force });
+      const response = await makeWordPressRequest('DELETE', `comments/${params.id}`, { force: params.force }, { siteId: params.site_id });
       const comment: WPComment = response;
       return {
         toolResult: {
