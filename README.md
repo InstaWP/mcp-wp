@@ -266,6 +266,10 @@ with rest_base `documentation-categories`). Tools resolve the identifier via
 `/wp/v2/taxonomies` and error on unknown taxonomies instead of guessing.
 `assign_terms_to_content` verifies the write against the WordPress response
 and reports an error if the terms were not actually saved.
+`create_content` and `update_content` verify their `categories`/`tags` writes
+the same way, but since the rest of the write (title, content, meta) did
+apply, they report a warning alongside the successful result instead of an
+error, naming the exact term IDs WordPress silently dropped.
 
 #### Recipe Cards (WP Recipe Maker)
 
