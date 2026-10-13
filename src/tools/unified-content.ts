@@ -1,6 +1,7 @@
 // src/tools/unified-content.ts
 import { Tool } from '@modelcontextprotocol/sdk/types.js';
 import { makeWordPressRequest, logToFile } from '../wordpress.js';
+import { siteManager } from '../config/site-manager.js';
 import { z } from 'zod';
 import * as fs from 'fs-extra';
 import * as path from 'path';
@@ -16,10 +17,39 @@ const CACHE_DIR = process.env.UNIFIED_CONTENT_CACHE_DIR
 // Ensure the cache directory exists at module load time (best-effort)
 fs.ensureDir(CACHE_DIR).catch(() => {});
 
-// Cache for post types to reduce API calls
-let postTypesCache: any = null;
-let cacheTimestamp: number = 0;
+// Cache for post types, keyed per site, to reduce API calls.
+// Mirrors the per-site pattern in unified-taxonomies.ts: an unkeyed singleton
+// here let one site's post types shadow another's (the memory cache was checked
+// before the correctly-keyed disk cache), so endpoint resolution for custom
+// post types could use the wrong site's rest_base until a forced refresh.
+interface PostTypesCacheEntry {
+  data: any;
+  timestamp: number;
+}
+const postTypesCache = new Map<string, PostTypesCacheEntry>();
 const CACHE_DURATION = parseInt(process.env.WORDPRESS_CACHE_DURATION || '3600000'); // Default 1 hour, configurable
+
+/**
+ * Resolve an optional siteId to the concrete id the cache layers key on.
+ *
+ * Callers reach the default site two ways — omitting site_id, or passing its
+ * actual id — and both must land in the same cache slot, or a forced refresh
+ * through one shape leaves the other stale (and, when a *non-default* site is
+ * explicitly named "default", the two sites would share a disk file).
+ * Exported for unified-taxonomies.ts, whose per-site cache has the same
+ * two-shapes property.
+ */
+export function resolveCacheSiteId(siteId?: string): string {
+  if (siteId) {
+    return siteId;
+  }
+  try {
+    return siteManager.getDefaultSiteId() || '__default__';
+  } catch {
+    // Nothing configured yet (e.g. unit tests); still cache coherently.
+    return '__default__';
+  }
+}
 
 // Helper function to load cache from disk
 async function loadCacheFromDisk(siteId?: string): Promise<{ data: any; timestamp: number } | null> {
@@ -57,20 +87,21 @@ async function saveCacheToDisk(data: any, siteId?: string): Promise<void> {
 // Helper function to get all post types with caching
 async function getPostTypes(forceRefresh = false, siteId?: string) {
   const now = Date.now();
+  const cacheKey = resolveCacheSiteId(siteId);
 
   // Try memory cache first
-  if (!forceRefresh && postTypesCache && (now - cacheTimestamp) < CACHE_DURATION) {
+  const cached = postTypesCache.get(cacheKey);
+  if (!forceRefresh && cached && (now - cached.timestamp) < CACHE_DURATION) {
     logToFile('Using memory-cached post types', 'debug');
-    return postTypesCache;
+    return cached.data;
   }
 
   // Try disk cache if memory cache is stale
   if (!forceRefresh) {
-    const diskCache = await loadCacheFromDisk(siteId);
+    const diskCache = await loadCacheFromDisk(cacheKey);
     if (diskCache && (now - diskCache.timestamp) < CACHE_DURATION) {
       logToFile('Using disk-cached post types', 'debug');
-      postTypesCache = diskCache.data;
-      cacheTimestamp = diskCache.timestamp;
+      postTypesCache.set(cacheKey, { data: diskCache.data, timestamp: diskCache.timestamp });
       return diskCache.data;
     }
   }
@@ -79,11 +110,10 @@ async function getPostTypes(forceRefresh = false, siteId?: string) {
   try {
     logToFile('Fetching post types from API', 'info');
     const response = await makeWordPressRequest('GET', 'types', undefined, { siteId });
-    postTypesCache = response;
-    cacheTimestamp = now;
+    postTypesCache.set(cacheKey, { data: response, timestamp: now });
 
     // Save to disk for persistence
-    await saveCacheToDisk(response, siteId);
+    await saveCacheToDisk(response, cacheKey);
 
     return response;
   } catch (error: any) {
