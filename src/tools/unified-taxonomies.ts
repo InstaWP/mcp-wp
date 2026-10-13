@@ -1,7 +1,7 @@
 // src/tools/unified-taxonomies.ts
 import { Tool } from '@modelcontextprotocol/sdk/types.js';
 import { makeWordPressRequest, logToFile } from '../wordpress.js';
-import { getContentEndpoint } from './unified-content.js';
+import { getContentEndpoint, resolveCacheSiteId } from './unified-content.js';
 import { z } from 'zod';
 
 // Cache for taxonomies, keyed per site, to reduce API calls
@@ -14,7 +14,7 @@ const CACHE_DURATION = 5 * 60 * 1000; // 5 minutes
 
 // Helper function to get all taxonomies for a site with caching
 async function getTaxonomies(forceRefresh = false, siteId?: string) {
-  const cacheKey = siteId || '__default__';
+  const cacheKey = resolveCacheSiteId(siteId);
   const now = Date.now();
   const cached = taxonomiesCache.get(cacheKey);
 
