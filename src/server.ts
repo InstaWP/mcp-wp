@@ -5,7 +5,9 @@ dotenv.config(); // Load environment variables from .env first
 
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
+import { installStdioLifecycle } from './lifecycle.js';
 import { allTools, toolHandlers } from './tools/index.js';
+import fs from 'node:fs';
 import { z } from 'zod';
 import { zodToJsonSchema } from 'zod-to-json-schema';
 
@@ -53,6 +55,8 @@ for (const tool of allTools) {
 }
 
 async function main() {
+    // Capture before any await — process.ppid is dynamic.
+    const parentPid = process.ppid;
     const { logToFile } = await import('./wordpress.js');
     
     // Log startup info to stderr (MCP protocol uses stdout)
@@ -68,6 +72,12 @@ async function main() {
 
         logToFile('Setting up server transport...');
         const transport = new StdioServerTransport();
+        installStdioLifecycle({
+            transport,
+            onCloseAssignable: server.server,
+            envName: 'WORDPRESS_PARENT_WATCHDOG_MS',
+            parentPid,
+        });
         await server.connect(transport);
         logToFile('WordPress MCP Server running on stdio');
         logToFile(`Registered ${allTools.length} tools`);
@@ -82,18 +92,34 @@ async function main() {
     }
 }
 
-// Handle process signals and errors
-// IMPORTANT: MCP uses stdout for JSON-RPC — never use console.log here
-process.on('SIGTERM', () => {
-    process.stderr.write('[SHUTDOWN] Received SIGTERM, shutting down...\n');
-    process.exit(0);
-});
-process.on('SIGINT', () => {
-    process.stderr.write('[SHUTDOWN] Received SIGINT, shutting down...\n');
-    process.exit(0);
-});
+// Handle process errors.
+// Signals and stdin EOF live in lifecycle.ts. SIGTERM/SIGINT still exit;
+// SIGHUP is ignored so a stray hangup cannot kill the process with no log.
+// IMPORTANT: MCP uses stdout for JSON-RPC — never use console.log here.
+const NONFATAL_CODES = new Set([
+    'EPIPE',
+    'ECONNRESET',
+    'ECONNABORTED',
+    'ETIMEDOUT',
+    'ERR_STREAM_DESTROYED',
+]);
+
+function errorCode(error: unknown): string | undefined {
+    return error && typeof error === 'object' && 'code' in error
+        ? String((error as { code?: unknown }).code)
+        : undefined;
+}
+
 process.on('uncaughtException', (error) => {
-    process.stderr.write(`[FATAL] Uncaught exception: ${error instanceof Error ? error.stack || error.message : error}\n`);
+    const code = errorCode(error);
+    const detail = error instanceof Error ? error.stack || error.message : error;
+    fs.writeSync(
+        2,
+        code && NONFATAL_CODES.has(code)
+            ? `[ERROR] Non-fatal ${code}: ${detail}\n`
+            : `[FATAL] Uncaught exception: ${detail}\n`,
+    );
+    if (code && NONFATAL_CODES.has(code)) return;
     process.exit(1);
 });
 // Do NOT exit on unhandled rejections: a stray promise rejection (e.g. a
@@ -101,12 +127,16 @@ process.on('uncaughtException', (error) => {
 // the whole server over — that surfaces in clients as the server abruptly
 // disconnecting. Log it loudly instead.
 process.on('unhandledRejection', (reason) => {
-    process.stderr.write(`[ERROR] Unhandled rejection (server continuing): ${reason instanceof Error ? reason.stack || reason.message : reason}\n`);
+    const detail = reason instanceof Error ? reason.stack || reason.message : reason;
+    fs.writeSync(
+        2,
+        `[ERROR] Unhandled rejection (server continuing): ${detail}\n`,
+    );
 });
-// Always leave a trace of WHY the process is exiting, so client-side
-// "transport closed unexpectedly" messages can be correlated with a cause.
+// writeSync so the line is still visible if the stream buffer has not flushed
+// by the time Claude reaps the process.
 process.on('exit', (code) => {
-    process.stderr.write(`[SHUTDOWN] Process exiting with code ${code}\n`);
+    fs.writeSync(2, `[SHUTDOWN] Process exiting with code ${code}\n`);
 });
 
 main().catch((error) => {
