@@ -18,18 +18,21 @@ export type ParentLivenessProbe = (parentPid: number) => boolean;
 export const DEFAULT_PARENT_WATCHDOG_MS = 30_000;
 
 const MIN_PARENT_WATCHDOG_MS = 100;
+/** Node stores timer delays as a signed 32-bit int. Larger values overflow to 1ms. */
+const MAX_PARENT_WATCHDOG_MS = 2_147_483_647;
 
 /**
  * Parse WORDPRESS_PARENT_WATCHDOG_MS into a safe poll interval.
  *
  * Non-finite / zero / negative → default. No disable value: an unparseable
  * knob must never silently turn orphan protection off. Floored at
- * MIN_PARENT_WATCHDOG_MS so tiny inputs can't spin the CPU.
+ * MIN_PARENT_WATCHDOG_MS so tiny inputs can't spin the CPU, and capped at
+ * MAX_PARENT_WATCHDOG_MS so a huge value cannot overflow Node's timer to 1ms.
  */
 export function parseWatchdogIntervalMs(raw: string | undefined): number {
   const n = Number(raw);
   if (!Number.isFinite(n) || n <= 0) return DEFAULT_PARENT_WATCHDOG_MS;
-  return Math.max(n, MIN_PARENT_WATCHDOG_MS);
+  return Math.min(Math.max(n, MIN_PARENT_WATCHDOG_MS), MAX_PARENT_WATCHDOG_MS);
 }
 
 /**
@@ -63,11 +66,13 @@ export function startParentWatchdog(
   return timer;
 }
 
-function writeStderr(message: string) {
+/** Synchronous stderr write that never throws. A full pipe (EAGAIN) or a
+ * closed fd must not turn a diagnostic into a fatal exception. */
+export function writeDiagnostic(message: string) {
   try {
     fs.writeSync(2, message.endsWith("\n") ? message : `${message}\n`);
   } catch {
-    /* stderr may already be gone */
+    /* stderr may already be gone or blocked */
   }
 }
 
@@ -115,7 +120,7 @@ export function installStdioLifecycle(options: {
   const onPipeError = (error: NodeJS.ErrnoException) => {
     if (error?.code === "EPIPE" || error?.code === "ERR_STREAM_DESTROYED")
       return;
-    writeStderr(
+    writeDiagnostic(
       `[ERROR] stdio: ${error?.stack || error?.message || String(error)}`,
     );
   };
@@ -127,18 +132,18 @@ export function installStdioLifecycle(options: {
   }
 
   const onTerm = () => {
-    writeStderr("[SHUTDOWN] Received SIGTERM, shutting down...");
+    writeDiagnostic("[SHUTDOWN] Received SIGTERM, shutting down...");
     shutdown(0);
   };
   const onInt = () => {
-    writeStderr("[SHUTDOWN] Received SIGINT, shutting down...");
+    writeDiagnostic("[SHUTDOWN] Received SIGINT, shutting down...");
     shutdown(0);
   };
   // SIGHUP's default action kills the process without running 'exit' hooks,
   // which Claude logs as a crash with an empty stderr. Ignore it while the
   // original parent is alive; the watchdog still exits after a real reparent.
   const onHup = () => {
-    writeStderr(
+    writeDiagnostic(
       `[WARN] Ignoring SIGHUP (parent ${parentPid}, current ${process.ppid})`,
     );
   };
@@ -151,7 +156,7 @@ export function installStdioLifecycle(options: {
     parentPid,
     parseWatchdogIntervalMs(process.env[envName]),
     () => {
-      writeStderr(`[SHUTDOWN] Parent ${parentPid} is gone, shutting down...`);
+      writeDiagnostic(`[SHUTDOWN] Parent ${parentPid} is gone, shutting down...`);
       shutdown(0);
     },
   );

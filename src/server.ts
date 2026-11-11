@@ -5,9 +5,8 @@ dotenv.config(); // Load environment variables from .env first
 
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
-import { installStdioLifecycle } from './lifecycle.js';
+import { installStdioLifecycle, writeDiagnostic } from './lifecycle.js';
 import { allTools, toolHandlers } from './tools/index.js';
-import fs from 'node:fs';
 import { z } from 'zod';
 import { zodToJsonSchema } from 'zod-to-json-schema';
 
@@ -113,8 +112,7 @@ function errorCode(error: unknown): string | undefined {
 process.on('uncaughtException', (error) => {
     const code = errorCode(error);
     const detail = error instanceof Error ? error.stack || error.message : error;
-    fs.writeSync(
-        2,
+    writeDiagnostic(
         code && NONFATAL_CODES.has(code)
             ? `[ERROR] Non-fatal ${code}: ${detail}\n`
             : `[FATAL] Uncaught exception: ${detail}\n`,
@@ -128,15 +126,14 @@ process.on('uncaughtException', (error) => {
 // disconnecting. Log it loudly instead.
 process.on('unhandledRejection', (reason) => {
     const detail = reason instanceof Error ? reason.stack || reason.message : reason;
-    fs.writeSync(
-        2,
+    writeDiagnostic(
         `[ERROR] Unhandled rejection (server continuing): ${detail}\n`,
     );
 });
 // writeSync so the line is still visible if the stream buffer has not flushed
 // by the time Claude reaps the process.
 process.on('exit', (code) => {
-    fs.writeSync(2, `[SHUTDOWN] Process exiting with code ${code}\n`);
+    writeDiagnostic(`[SHUTDOWN] Process exiting with code ${code}\n`);
 });
 
 main().catch((error) => {

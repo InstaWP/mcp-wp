@@ -1,3 +1,4 @@
+import fs from 'node:fs';
 import { spawn } from 'node:child_process';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
@@ -5,6 +6,7 @@ import {
   installStdioLifecycle,
   parseWatchdogIntervalMs,
   startParentWatchdog,
+  writeDiagnostic,
 } from '../src/lifecycle.js';
 
 describe('parseWatchdogIntervalMs', () => {
@@ -19,6 +21,32 @@ describe('parseWatchdogIntervalMs', () => {
   it('honours positive values floored at 100ms', () => {
     expect(parseWatchdogIntervalMs('250')).toBe(250);
     expect(parseWatchdogIntervalMs('50')).toBe(100);
+  });
+
+  it('clamps values that would overflow Node timers to 1ms', () => {
+    expect(parseWatchdogIntervalMs('2592000000')).toBe(2_147_483_647);
+    const timer = startParentWatchdog(
+      1,
+      parseWatchdogIntervalMs('2592000000'),
+      () => {},
+      () => false,
+    );
+    expect((timer as NodeJS.Timeout & { _idleTimeout: number })._idleTimeout).toBe(
+      2_147_483_647,
+    );
+    clearInterval(timer);
+  });
+});
+
+describe('writeDiagnostic', () => {
+  it('swallows a synchronous stderr failure', () => {
+    const spy = vi.spyOn(fs, 'writeSync').mockImplementation(() => {
+      const error = new Error('EAGAIN') as NodeJS.ErrnoException;
+      error.code = 'EAGAIN';
+      throw error;
+    });
+    expect(() => writeDiagnostic('blocked')).not.toThrow();
+    spy.mockRestore();
   });
 });
 
